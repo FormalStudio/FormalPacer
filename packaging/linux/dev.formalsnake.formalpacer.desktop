@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=FormalPacer
+GenericName=Frame Pacer
+Comment=Caps games to a frame rate they can hold, in step with the display
+Exec=formalpacer
+Icon=dev.formalsnake.formalpacer
+Terminal=false
+Categories=Game;Utility;
+Keywords=fps;frame;pacing;limiter;vrr;freesync;gsync;
+StartupWMClass=dev.formalsnake.formalpacer

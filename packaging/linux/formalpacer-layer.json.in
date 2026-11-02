@@ -1,0 +1,12 @@
+{
+  "file_format_version": "1.0.0",
+  "layer": {
+    "name": "VK_LAYER_FORMALSTUDIO_formalpacer",
+    "type": "GLOBAL",
+    "library_path": "@LIBRARY_PATH@",
+    "api_version": "1.3.0",
+    "implementation_version": "1",
+    "description": "FormalPacer frame pacing",
+    "disable_environment": { "DISABLE_FORMALPACER": "1" }
+  }
+}

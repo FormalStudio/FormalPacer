@@ -1,0 +1,13 @@
+[package]
+name = "formalpacer-shm"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The shared memory page between the FormalPacer Vulkan layer and the app."
+
+[dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true

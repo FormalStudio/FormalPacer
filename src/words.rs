@@ -1,0 +1,73 @@
+//! What the window, the tray item and `--headless` say about a snapshot.
+
+use formalpacer_engine::display::{Display, Vrr};
+use formalpacer_engine::engine::{Game, Placement, Snapshot};
+
+pub fn vrr(display: &Display) -> String {
+    let range = display.vrr_range.map(|(lo, hi)| format!(", {lo:.0}–{hi:.0} Hz")).unwrap_or_default();
+    match display.vrr {
+        Vrr::Active => format!("On{range}"),
+        Vrr::Off => format!("Supported, off{range}"),
+        Vrr::Unsupported => "Not supported".into(),
+    }
+}
+
+pub fn display_name(display: &Display) -> String {
+    match &display.model {
+        Some(model) => format!("{model} on {}", display.connector),
+        None => display.connector.clone(),
+    }
+}
+
+pub fn placement(placement: Placement) -> &'static str {
+    match placement {
+        Placement::Chosen => "Chosen in settings",
+        Placement::Window => "The game's window is on it",
+        Placement::Vrr => "Has VRR running",
+        Placement::Fastest => "The fastest display",
+    }
+}
+
+/// "48 fps, a third of 144 Hz", or why there is no cap.
+pub fn cap(snapshot: &Snapshot, game: &Game) -> String {
+    let refresh = snapshot.display(&game.display).map_or(0., |d| d.refresh_hz);
+    match (&game.cap, snapshot.config.mode) {
+        (_, formalpacer_engine::config::Mode::Off) => "Off: measuring only".into(),
+        (Some(cap), _) => cap.describe(refresh),
+        // The planner gives up only when even a 20 fps cap would not hold.
+        (None, _) if game.stats.capacity_fps > 0. && game.stats.capacity_fps < 22. => {
+            "None: the game runs too slowly for a cap to help".into()
+        }
+        (None, _) => "Measuring".into(),
+    }
+}
+
+pub fn fps(v: f64) -> String {
+    if v > 0. { format!("{v:.0}") } else { "–".into() }
+}
+
+/// The game, its display and the cap, without the frame rates.
+pub fn state_line(snapshot: &Snapshot) -> String {
+    let Some(game) = &snapshot.game else { return "no game".into() };
+    let display = snapshot.display(&game.display);
+    format!(
+        "{} on {} ({:.2} Hz, VRR {}, {}): cap {}",
+        game.name,
+        display.map(display_name).unwrap_or_else(|| "no display".into()),
+        display.map_or(0., |d| d.refresh_hz),
+        lower_first(&display.map(vrr).unwrap_or_default()),
+        lower_first(placement(game.placement)),
+        cap(snapshot, game),
+    )
+}
+
+pub fn rates_line(snapshot: &Snapshot) -> String {
+    let Some(game) = &snapshot.game else { return String::new() };
+    let s = &game.stats;
+    format!(" | avg {} fps, 1% low {} fps, could run {} fps", fps(s.avg_fps), fps(s.low_fps), fps(s.capacity_fps))
+}
+
+fn lower_first(s: &str) -> String {
+    let mut chars = s.chars();
+    chars.next().map(|c| c.to_lowercase().chain(chars).collect()).unwrap_or_default()
+}

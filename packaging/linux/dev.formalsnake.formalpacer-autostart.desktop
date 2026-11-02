@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=FormalPacer
+Comment=Frame pacing for games, in the tray
+Exec=formalpacer --background
+Icon=dev.formalsnake.formalpacer
+Terminal=false
+X-GNOME-Autostart-enabled=true

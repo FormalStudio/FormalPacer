@@ -1,0 +1,15 @@
+[package]
+name = "fakegame"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1"
+ash = "0.38"
+ash-window = "0.13"
+winit = "0.30"
+
+[lints]
+workspace = true
