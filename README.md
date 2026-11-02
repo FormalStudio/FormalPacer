@@ -19,12 +19,12 @@ and a small window.
 └──────────────────────────┘                          └───────────────────────────────────┘
 ```
 
-An implicit Vulkan layer sits in front of `vkQueuePresentKHR` in every game. Before each present
-it sleeps until the next deadline of the cap, then records how long the frame took and how much
-of that was its own sleep, so the app always knows what the game could do uncapped. The app reads
-the display's mode and VRR state from the kernel, finds which monitor the game's window is on,
-and writes the cap back. On g815's 144 Hz PA278CGV a test game that renders 60 fps is held at
-48.0 fps with its 1% low at 48, and one that renders 200 fps is held at 138 fps with VRR on.
+An implicit Vulkan layer hooks `vkQueuePresentKHR` in every game. Before each present it sleeps
+until the cap's next deadline, then records how long the frame took and how much of that was its
+own sleep, which tells the app what the game could do uncapped. The app reads each display's mode
+and VRR state from the kernel, finds the monitor the game's window is on, and writes the cap
+back. On a 144 Hz panel, a game that renders 60 fps is held at 48 with its 1% low at 48, and one
+that renders 200 fps is held at 138 with VRR on.
 
 ## How it picks the cap
 
@@ -62,8 +62,9 @@ comes from the monitor's EDID.
 - Picks up games by itself: anything Steam or Proton starts, Wine and Lutris games, and any
   `.exe`. Launchers, gamescope and the Steam client are left alone.
 - Steam games show their store name, read from the library's app manifests.
-- One process: the engine, the tray item and the window. Closing the window leaves pacing and the
-  tray item running; launching FormalPacer again brings the window back.
+- One process: the engine, the tray item and the window. It starts in the tray at login. Closing
+  the window leaves pacing and the tray item running; launching FormalPacer again brings the
+  window back.
 - The tray item shows the game and its cap, toggles pacing and quits.
 - `formalpacer --headless` runs the engine with no window and writes what it does to stderr.
 - Follows the system: light and dark, the accent colour, and matugen palettes, live.
@@ -80,13 +81,13 @@ build, `libxkbcommon`, `wayland`, `vulkan-loader`, `fontconfig`, `freetype`.
 ```sh
 git clone https://github.com/FormalStudio/FormalPacer
 cd FormalPacer
-just install      # ~/.local/bin, the layer in ~/.local/lib/formalpacer, its manifest, desktop entry and icon
-just autostart    # optional: start in the tray at login
+just install      # the app, the layer and its manifest, a desktop entry and a login item
 ```
 
-Start FormalPacer, then any game. Games started before the layer was installed need a restart.
-If the layer is not registered, the window offers to register the one installed next to the app.
-`just uninstall` removes everything `install` and `autostart` put down.
+Start FormalPacer once (after that it starts at login), then any game. Games that were already
+running when the layer went in need a restart. If the layer is not registered, the window offers
+to register the one installed next to the app. `just uninstall` removes everything `install` put
+down.
 
 To force the layer on for a game it does not recognise, set `FORMALPACER=1` in its launch options
 (`FORMALPACER=1 %command%` in Steam). `FORMALPACER=0` leaves one game alone, and
@@ -98,7 +99,7 @@ The window writes `~/.config/formalpacer/config.toml`:
 
 ```toml
 mode = "auto"        # "off" measures without capping
-display = "DP-3"     # leave out to follow the game
+display = "DP-1"     # leave out to follow the game
 ```
 
 ## Development

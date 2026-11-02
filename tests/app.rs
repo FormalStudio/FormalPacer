@@ -48,7 +48,7 @@ fn shows_the_game_its_cap_and_its_display() {
     for wanted in [
         "ELDEN RING",
         "48 fps, a third of 144 Hz",
-        "PA278CGV on DP-3",
+        "Desk monitor on DP-1",
         "143.97 Hz",
         "Supported, off, 48–144 Hz",
         "The game's window is on it",
@@ -63,7 +63,7 @@ fn mode_and_display_choices_go_to_the_engine() {
     let mut rig = open(demo::snapshot());
     rig.act("mode", SemanticAction::SetValue("Off".into()));
     assert_eq!(rig.commands.try_recv().ok(), Some(Command::SetMode(Mode::Off)));
-    rig.act("display", SemanticAction::SetValue("LG TV on HDMI-A-1".into()));
+    rig.act("display", SemanticAction::SetValue("TV on HDMI-A-1".into()));
     assert_eq!(rig.commands.try_recv().ok(), Some(Command::SetDisplay(Some("HDMI-A-1".into()))));
     rig.act("display", SemanticAction::SetValue("Follow the game".into()));
     assert_eq!(rig.commands.try_recv().ok(), Some(Command::SetDisplay(None)));

@@ -19,8 +19,8 @@ pub fn snapshot() -> Snapshot {
         layer: LayerState::Installed("/usr/lib/formalpacer/libformalpacer_layer.so".into()),
         displays: vec![
             Display {
-                connector: "DP-3".into(),
-                model: Some("PA278CGV".into()),
+                connector: "DP-1".into(),
+                model: Some("Desk monitor".into()),
                 width: 2560,
                 height: 1440,
                 refresh_hz: 143.973,
@@ -30,7 +30,7 @@ pub fn snapshot() -> Snapshot {
             },
             Display {
                 connector: "HDMI-A-1".into(),
-                model: Some("LG TV".into()),
+                model: Some("TV".into()),
                 width: 3840,
                 height: 2160,
                 refresh_hz: 60.,
@@ -44,7 +44,7 @@ pub fn snapshot() -> Snapshot {
             steam_app_id: 1245620,
             stats: Stats { avg_fps: 48., low_fps: 46.9, capacity_fps: 61.4, frames: 0, span_s: 0. },
             cap: Some(Cap { fps: 143.973 / 3., kind: CapKind::Fraction(3) }),
-            display: "DP-3".into(),
+            display: "DP-1".into(),
             placement: Placement::Window,
         }),
         notice: None,
