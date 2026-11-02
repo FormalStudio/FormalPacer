@@ -126,7 +126,7 @@ impl Main {
             .and_then(|c| displays.iter().position(|d| &d.connector == c))
             .map_or(0, |i| i + 1);
         let current = snapshot.game.as_ref().and_then(|g| snapshot.display(&g.display)).or_else(|| {
-            formalpacer_engine::engine::pick_display(&displays, snapshot.config.display.as_deref(), None)
+            formalpacer_engine::engine::pick_display(&displays, snapshot.config.display.as_deref(), None, (0, 0))
                 .map(|(d, _)| d)
         });
 
@@ -165,6 +165,16 @@ impl Main {
         }
         section
     }
+
+    fn overlay_section(&self, snapshot: &Snapshot, cx: &mut Context<Self>) -> FormSection {
+        form_section().title("Overlay").footer(words::OVERLAY_HOTKEY).child(form_row("In-game overlay").child(
+            switch("overlay").label("In-game overlay").checked(snapshot.config.overlay).on_toggle(cx.listener(
+                |this, e: &Toggled, _, cx| {
+                    this.send(Command::SetOverlay(e.checked), cx);
+                },
+            )),
+        ))
+    }
 }
 
 impl Render for Main {
@@ -186,7 +196,11 @@ impl Render for Main {
                         .into_any_element(),
                 };
                 let margin = cx.theme().spacing.content_margin;
-                form().child(div().p(margin).child(top)).child(self.display_section(snapshot, cx)).into_any_element()
+                form()
+                    .child(div().p(margin).child(top))
+                    .child(self.display_section(snapshot, cx))
+                    .child(self.overlay_section(snapshot, cx))
+                    .into_any_element()
             }
         };
 

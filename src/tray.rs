@@ -32,6 +32,7 @@ pub fn build(snapshot: &Snapshot) -> Tray {
     }
     tray.item(TrayMenuItem::Separator)
         .item(TrayMenuItem::check("auto", "Pace Games", snapshot.config.mode == Mode::Auto))
+        .item(TrayMenuItem::check("overlay", "In-Game Overlay", snapshot.config.overlay))
         .item(TrayMenuItem::item("open", "Open FormalPacer"))
         .item(TrayMenuItem::Separator)
         .item(TrayMenuItem::item("quit", "Quit"))
@@ -71,8 +72,15 @@ pub fn listen(model: Entity<Model>) {
                 };
                 let _ = model.commands.send(Command::SetMode(mode));
             }
+            Some("overlay") => toggle_overlay(&model, cx),
             Some("quit") => cx.quit(),
             _ => {}
         }
     });
+}
+
+pub fn toggle_overlay(model: &Entity<Model>, cx: &mut App) {
+    let model = model.read(cx);
+    let show = model.snapshot.as_ref().is_none_or(|s| !s.config.overlay);
+    let _ = model.commands.send(Command::SetOverlay(show));
 }

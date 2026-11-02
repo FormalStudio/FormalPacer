@@ -23,6 +23,7 @@ pub fn placement(placement: Placement) -> &'static str {
     match placement {
         Placement::Chosen => "Chosen in settings",
         Placement::Window => "The game's window is on it",
+        Placement::Size => "The game fills it",
         Placement::Vrr => "Has VRR running",
         Placement::Fastest => "The fastest display",
     }
@@ -71,3 +72,5 @@ fn lower_first(s: &str) -> String {
     let mut chars = s.chars();
     chars.next().map(|c| c.to_lowercase().chain(chars).collect()).unwrap_or_default()
 }
+
+pub const OVERLAY_HOTKEY: &str = "Frame rate, cap and VRR in the game's top-left corner. Right Shift + F10 toggles it in game, or run formalpacer --toggle-overlay from a key binding.";

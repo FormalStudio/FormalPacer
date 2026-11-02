@@ -2,6 +2,7 @@ pub mod app;
 pub mod demo;
 mod instance;
 mod pump;
+mod run;
 mod tray;
 pub use tray::build as tray_for;
 pub mod words;
@@ -10,6 +11,7 @@ use formalpacer_engine::engine::{self, Snapshot};
 use nd::prelude::*;
 
 pub use app::{Main, Model};
+pub use run::exec as run_game;
 
 pub fn app() -> Application {
     Application::new(nd::manifest!())
@@ -52,8 +54,11 @@ pub fn run() -> nd::Result<()> {
             open_demo(cx);
         });
     }
+    let toggle_only = std::env::args().any(|a| a == instance::TOGGLE_OVERLAY);
     let primary = match instance::claim() {
         Some(instance::Claim::Forwarded) => return Ok(()),
+        // Nothing running to toggle.
+        Some(instance::Claim::Primary(_)) | None if toggle_only => return Ok(()),
         Some(instance::Claim::Primary(primary)) => Some(primary),
         None => None,
     };

@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 pub const LAYER_NAME: &str = "VK_LAYER_FORMALSTUDIO_formalpacer";
 const LIBRARY: &str = "libformalpacer_layer.so";
 const MANIFEST: &str = "formalpacer.json";
+/// The 32-bit build, for 32-bit games, in an `i686` directory beside the 64-bit one. The loader
+/// skips a manifest whose `library_arch` does not match the game.
+const MANIFEST_32: &str = "formalpacer-32.json";
 
 fn data_home() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
@@ -13,8 +16,8 @@ fn data_home() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
 }
 
-fn user_manifest() -> Option<PathBuf> {
-    data_home().map(|d| d.join("vulkan/implicit_layer.d").join(MANIFEST))
+fn user_manifest(name: &str) -> Option<PathBuf> {
+    data_home().map(|d| d.join("vulkan/implicit_layer.d").join(name))
 }
 
 fn manifest_dirs() -> Vec<PathBuf> {
@@ -23,7 +26,7 @@ fn manifest_dirs() -> Vec<PathBuf> {
         .filter_map(std::env::var_os)
         .flat_map(|v| std::env::split_paths(&v).collect::<Vec<_>>())
         .collect();
-    dirs.extend(user_manifest().and_then(|m| m.parent().map(Path::to_path_buf)));
+    dirs.extend(user_manifest(MANIFEST).and_then(|m| m.parent().map(Path::to_path_buf)));
     let system = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
     dirs.extend(system.split(':').filter(|s| !s.is_empty()).map(|d| PathBuf::from(d).join("vulkan/implicit_layer.d")));
     dirs.extend(
@@ -46,7 +49,7 @@ pub fn state() -> LayerState {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for entry in entries.flatten() {
             let Ok(json) = std::fs::read_to_string(entry.path()) else { continue };
-            if !json.contains(LAYER_NAME) {
+            if !json.contains(&format!("\"{LAYER_NAME}\"")) {
                 continue;
             }
             let library = json
@@ -71,19 +74,31 @@ pub fn bundled_library() -> Option<PathBuf> {
         .and_then(|p| p.canonicalize().ok())
 }
 
-pub fn manifest_json(library: &Path) -> String {
+/// The manifest for the 64-bit library, or with `bits == 32` for the 32-bit one.
+pub fn manifest_json(library: &Path, bits: u32) -> String {
+    let name = if bits == 32 { format!("{LAYER_NAME}_32") } else { LAYER_NAME.to_owned() };
     include_str!("../../../packaging/linux/formalpacer-layer.json.in")
+        .replace("@LAYER_NAME@", &name)
         .replace("@LIBRARY_PATH@", &library.display().to_string())
+        .replace("@LIBRARY_ARCH@", &bits.to_string())
 }
 
-/// Writes the user-level manifest pointing at the bundled library.
+/// Writes the user-level manifests pointing at the bundled libraries.
 pub fn install() -> io::Result<PathBuf> {
     let library = bundled_library()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{LIBRARY} is not next to this binary")))?;
-    let manifest = user_manifest().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no HOME"))?;
+    let manifest = user_manifest(MANIFEST).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no HOME"))?;
     if let Some(parent) = manifest.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&manifest, manifest_json(&library))?;
+    std::fs::write(&manifest, manifest_json(&library, 64))?;
+    if let Some(dir) = library.parent()
+        && let Some(manifest_32) = user_manifest(MANIFEST_32)
+    {
+        let library_32 = dir.join("i686").join(LIBRARY);
+        if library_32.is_file() {
+            std::fs::write(manifest_32, manifest_json(&library_32, 32))?;
+        }
+    }
     Ok(manifest)
 }

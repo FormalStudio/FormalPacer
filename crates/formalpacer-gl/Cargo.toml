@@ -1,0 +1,17 @@
+[package]
+name = "formalpacer-gl"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "LD_PRELOAD hook that paces OpenGL games at their buffer swap and draws the overlay."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+formalpacer-hook.workspace = true
+libc.workspace = true
+
+[lints]
+workspace = true

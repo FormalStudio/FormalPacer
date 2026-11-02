@@ -6,6 +6,12 @@ use ash::vk::{self, Handle};
 
 /// `VK_LAYER_LINK_INFO`: the chain entry that carries the next layer's entry points.
 const LINK_INFO: i32 = 0;
+/// `VK_LOADER_DATA_CALLBACK`: the chain entry that carries `pfnSetDeviceLoaderData`.
+const LOADER_DATA_CALLBACK: i32 = 1;
+
+/// `PFN_vkSetDeviceLoaderData`: gives a dispatchable object the layer created itself, such as a
+/// command buffer, the loader's dispatch table.
+pub type SetDeviceLoaderData = unsafe extern "system" fn(vk::Device, *mut c_void) -> vk::Result;
 
 #[repr(C)]
 pub struct LayerInstanceLink {
@@ -38,6 +44,14 @@ pub struct LayerDeviceCreateInfo {
 }
 
 #[repr(C)]
+pub struct LayerDeviceLoaderData {
+    pub s_type: vk::StructureType,
+    pub p_next: *const c_void,
+    pub function: i32,
+    pub set_device_loader_data: SetDeviceLoaderData,
+}
+
+#[repr(C)]
 pub struct NegotiateLayerInterface {
     pub s_type: i32,
     pub p_next: *mut c_void,
@@ -48,10 +62,10 @@ pub struct NegotiateLayerInterface {
 }
 
 macro_rules! find_link {
-    ($ty:ty, $s_type:expr) => {
+    ($ty:ty, $s_type:expr, $function:expr) => {
         impl $ty {
-            /// The link entry in a create info's `pNext` chain. The loader expects the layer to
-            /// advance it in place before calling down.
+            /// The loader's entry of this kind in a create info's `pNext` chain. The loader
+            /// expects the layer to advance a link entry in place before calling down.
             ///
             /// # Safety
             /// `p_next` must be a valid Vulkan structure chain.
@@ -60,7 +74,7 @@ macro_rules! find_link {
                     let entry = p_next as *mut Self;
                     // SAFETY: every chain entry starts with sType and pNext.
                     unsafe {
-                        if (*entry).s_type == $s_type && (*entry).function == LINK_INFO {
+                        if (*entry).s_type == $s_type && (*entry).function == $function {
                             return Some(entry);
                         }
                         p_next = (*entry).p_next;
@@ -72,8 +86,9 @@ macro_rules! find_link {
     };
 }
 
-find_link!(LayerInstanceCreateInfo, vk::StructureType::LOADER_INSTANCE_CREATE_INFO);
-find_link!(LayerDeviceCreateInfo, vk::StructureType::LOADER_DEVICE_CREATE_INFO);
+find_link!(LayerInstanceCreateInfo, vk::StructureType::LOADER_INSTANCE_CREATE_INFO, LINK_INFO);
+find_link!(LayerDeviceCreateInfo, vk::StructureType::LOADER_DEVICE_CREATE_INFO, LINK_INFO);
+find_link!(LayerDeviceLoaderData, vk::StructureType::LOADER_DEVICE_CREATE_INFO, LOADER_DATA_CALLBACK);
 
 /// The loader's dispatch table pointer, stored in the first word of every dispatchable handle.
 /// A device and its queues share one, as do an instance and its physical devices.

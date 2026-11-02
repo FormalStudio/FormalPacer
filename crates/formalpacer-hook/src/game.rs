@@ -31,6 +31,18 @@ pub fn detect() -> Option<Game> {
     is_game.then_some(Game { name, steam_app_id })
 }
 
+/// For a hook that is only ever loaded on purpose (the OpenGL hook goes in through
+/// `formalpacer run`), every process is a game except the known tools and `FORMALPACER=0`.
+pub fn detect_injected() -> Option<Game> {
+    let name = process_name();
+    let off = std::env::var("FORMALPACER").is_ok_and(|v| v == "0") || NOT_GAMES.contains(&name.as_str());
+    let steam_app_id = ["SteamGameId", "SteamAppId", "STEAM_COMPAT_APP_ID"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok()))
+        .unwrap_or(0);
+    (!off).then_some(Game { name, steam_app_id })
+}
+
 /// The program's own name: under Wine `argv[0]` is the Windows path of the `.exe`.
 fn process_name() -> String {
     let argv0 = std::fs::read("/proc/self/cmdline")

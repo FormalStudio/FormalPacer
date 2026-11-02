@@ -15,7 +15,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 pub const MAGIC: u64 = u64::from_le_bytes(*b"FPACER01");
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 /// Frame samples kept per process: about 3.5 s at 144 fps, enough for the app's windows.
 pub const RING: usize = 512;
 const NAME_LEN: usize = 64;
@@ -36,7 +36,56 @@ pub struct Page {
     /// When the last frame was presented.
     heartbeat_ns: AtomicU64,
     frames: AtomicU64,
+    /// Size of the game's swapchain, written by the layer.
+    swap_width: AtomicU32,
+    swap_height: AtomicU32,
+    /// Bumped by the layer each time the overlay hotkey is pressed; the app flips the setting.
+    toggles: AtomicU32,
+    /// Written by the app: [`Overlay`] as bits.
+    overlay: AtomicU32,
     ring: [AtomicU64; RING],
+}
+
+// 32-bit and 64-bit games share pages with the 64-bit app, so the layout must not depend on the
+// target. Every field is a fixed-size atomic; this pins the total.
+const _: () = assert!(size_of::<Page>() == 136 + 8 * RING);
+
+/// What the app asks the in-game overlay to show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Overlay {
+    pub show: bool,
+    pub vrr: VrrState,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VrrState {
+    #[default]
+    Unknown,
+    Unsupported,
+    Off,
+    On,
+}
+
+impl Overlay {
+    fn pack(self) -> u32 {
+        let vrr = match self.vrr {
+            VrrState::Unknown => 0,
+            VrrState::Unsupported => 1,
+            VrrState::Off => 2,
+            VrrState::On => 3,
+        };
+        u32::from(self.show) | (vrr << 1)
+    }
+
+    fn unpack(v: u32) -> Self {
+        let vrr = match (v >> 1) & 3 {
+            1 => VrrState::Unsupported,
+            2 => VrrState::Off,
+            3 => VrrState::On,
+            _ => VrrState::Unknown,
+        };
+        Self { show: v & 1 != 0, vrr }
+    }
 }
 
 /// One presented frame: the interval since the previous present and how much of it the layer
@@ -221,6 +270,33 @@ impl Mapping {
         (samples, end)
     }
 
+    pub fn swap_extent(&self) -> (u32, u32) {
+        let page = self.page();
+        (page.swap_width.load(Ordering::Relaxed), page.swap_height.load(Ordering::Relaxed))
+    }
+
+    pub fn set_swap_extent(&self, width: u32, height: u32) {
+        let page = self.page();
+        page.swap_width.store(width, Ordering::Relaxed);
+        page.swap_height.store(height, Ordering::Relaxed);
+    }
+
+    pub fn toggles(&self) -> u32 {
+        self.page().toggles.load(Ordering::Relaxed)
+    }
+
+    pub fn request_toggle(&self) {
+        self.page().toggles.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn overlay(&self) -> Overlay {
+        Overlay::unpack(self.page().overlay.load(Ordering::Relaxed))
+    }
+
+    pub fn set_overlay(&self, overlay: Overlay) {
+        self.page().overlay.store(overlay.pack(), Ordering::Relaxed);
+    }
+
     pub fn set_target(&self, interval_ns: u64, now: u64) {
         let page = self.page();
         page.target_ns.store(interval_ns, Ordering::Relaxed);
@@ -267,6 +343,12 @@ mod tests {
         assert_eq!(samples.last().unwrap().interval_us, 7000 + RING as u32 + 9);
         assert_eq!(samples[0].work_us(), samples[0].interval_us - 1000);
         assert_eq!(app.samples_since(end - 2).0.len(), 2);
+
+        let overlay = Overlay { show: true, vrr: VrrState::On };
+        app.set_overlay(overlay);
+        assert_eq!(layer.overlay(), overlay);
+        layer.request_toggle();
+        assert_eq!(app.toggles(), 1);
 
         app.set_target(6_944_444, 100);
         assert_eq!(layer.target(200, 1_000), 6_944_444);

@@ -9,6 +9,7 @@ rust-version = "1.95"
 
 [workspace.dependencies]
 formalpacer-shm = { path = "crates/formalpacer-shm" }
+formalpacer-hook = { path = "crates/formalpacer-hook" }
 formalpacer-engine = { path = "crates/formalpacer-engine" }
 flume = "0.11"
 libc = "0.2"

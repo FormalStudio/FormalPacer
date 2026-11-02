@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ash = { version = "0.38", default-features = false }
-formalpacer-shm.workspace = true
+formalpacer-hook.workspace = true
 libc.workspace = true
 
 [lints]

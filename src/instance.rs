@@ -1,9 +1,11 @@
 //! One FormalPacer per session: a second launch hands over to the running one, which shows its
-//! window, and exits.
+//! window (or, for `--toggle-overlay`, flips the overlay), and exits.
 
 use nd::prelude::*;
 
 use crate::Model;
+
+pub const TOGGLE_OVERLAY: &str = "--toggle-overlay";
 
 pub enum Claim {
     Primary(nd_ipc::instance::Primary),
@@ -36,13 +38,20 @@ pub fn show_on_launch(mut primary: nd_ipc::instance::Primary, model: Entity<Mode
         .name("formalpacer-instance".into())
         .spawn(move || {
             rt.block_on(async move {
-                while primary.next_launch().await.is_some() {
-                    if tx.send(()).is_err() {
+                while let Some(launch) = primary.next_launch().await {
+                    let toggle = launch.args.iter().any(|a| a == TOGGLE_OVERLAY);
+                    if tx.send(toggle).is_err() {
                         break;
                     }
                 }
             });
         })
         .ok();
-    crate::pump::pump(rx, move |(), cx| crate::show(cx, &model));
+    crate::pump::pump(rx, move |toggle: bool, cx| {
+        if toggle {
+            crate::tray::toggle_overlay(&model, cx);
+        } else {
+            crate::show(cx, &model);
+        }
+    });
 }

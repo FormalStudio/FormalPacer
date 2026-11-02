@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 cargo build -q --release -p formalpacer -p formalpacer-layer -p fakegame
 out=target/pacing
 mkdir -p "$out/layer"
-sed "s|@LIBRARY_PATH@|$PWD/target/release/libformalpacer_layer.so|" packaging/linux/formalpacer-layer.json.in > "$out/layer/formalpacer.json"
+sed "s|@LAYER_NAME@|VK_LAYER_FORMALSTUDIO_formalpacer|; s|@LIBRARY_PATH@|$PWD/target/release/libformalpacer_layer.so|; s|@LIBRARY_ARCH@|64|" packaging/linux/formalpacer-layer.json.in > "$out/layer/formalpacer.json"
 export VK_ADD_IMPLICIT_LAYER_PATH="$PWD/$out/layer" XDG_CONFIG_HOME="$PWD/$out/config" DISABLE_MANGOHUD=1
 [ $# -gt 0 ] || set -- 200 100 60
 target/release/formalpacer --headless 2> "$out/engine.log" &

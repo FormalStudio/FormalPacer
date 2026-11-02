@@ -1,8 +1,10 @@
 # CLAUDE.md
 
 FormalPacer caps games to a frame rate they can hold on the display they are on. An implicit
-Vulkan layer (`crates/formalpacer-layer`) sleeps before each present and writes frame samples to
-a page in `/dev/shm` (`crates/formalpacer-shm`); the engine thread (`crates/formalpacer-engine`)
+Vulkan layer (`crates/formalpacer-layer`, built 64-bit and 32-bit) and an `LD_PRELOAD` OpenGL hook
+(`crates/formalpacer-gl`) share the in-game code in `crates/formalpacer-hook`: they sleep before
+each present, draw the overlay, and write frame samples to a page in `/dev/shm`
+(`crates/formalpacer-shm`, same layout on both targets); the engine thread (`crates/formalpacer-engine`)
 reads displays from DRM, asks the compositor or X server which display the game is on, plans the
 cap and writes it back. `src/` is the nd app: one process with the engine, the tray item and a
 window that can close without stopping pacing (`set_quit_when_windows_close(false)`, single

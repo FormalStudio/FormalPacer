@@ -14,12 +14,20 @@ pub enum Mode {
     Off,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub mode: Mode,
-    /// The connector games run on (`DP-1`), or none to follow VRR and refresh rate.
+    /// The connector games run on (`DP-1`), or none to follow the game.
     pub display: Option<String>,
+    /// Frame rate, cap and VRR in the game's top-left corner.
+    pub overlay: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self { mode: Mode::Auto, display: None, overlay: true }
+    }
 }
 
 fn path() -> Option<PathBuf> {

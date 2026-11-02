@@ -67,6 +67,8 @@ fn mode_and_display_choices_go_to_the_engine() {
     assert_eq!(rig.commands.try_recv().ok(), Some(Command::SetDisplay(Some("HDMI-A-1".into()))));
     rig.act("display", SemanticAction::SetValue("Follow the game".into()));
     assert_eq!(rig.commands.try_recv().ok(), Some(Command::SetDisplay(None)));
+    rig.act("overlay", SemanticAction::Click);
+    assert_eq!(rig.commands.try_recv().ok(), Some(Command::SetOverlay(false)));
 }
 
 #[test]

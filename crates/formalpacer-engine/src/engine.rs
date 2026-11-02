@@ -6,10 +6,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use formalpacer_shm::{Mapping, Sample, now_ns, prefix, shm_dir};
+use formalpacer_shm::{Mapping, Overlay, Sample, VrrState, now_ns, prefix, shm_dir};
 
 use crate::config::{self, Config, Mode};
-use crate::display::{self, Display};
+use crate::display::{self, Display, Vrr};
 use crate::layer::{self, LayerState};
 use crate::pacing::{self, Cap, Pacer, Stats};
 use crate::{placement, steam};
@@ -20,12 +20,15 @@ const PROBE_EVERY: Duration = Duration::from_secs(1);
 /// A game that has not presented for this long is in the background or gone.
 const LIVE_NS: u64 = 1_500_000_000;
 const SWEEP_NS: u64 = 10_000_000_000;
-const KEEP_SAMPLES: usize = 1024;
+/// Enough for the planner's two seconds at any frame rate: a read gets at most a ring's worth
+/// every tick, about 2000 samples a second.
+const KEEP_SAMPLES: usize = 8192;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     SetMode(Mode),
     SetDisplay(Option<String>),
+    SetOverlay(bool),
     InstallLayer,
 }
 
@@ -47,6 +50,9 @@ pub enum Placement {
     Chosen,
     /// The compositor or X server says the game's window is there.
     Window,
+    /// The window's display is unknown; the game renders at exactly this display's mode, so it
+    /// is fullscreen there.
+    Size,
     /// The window's display is unknown; this one has VRR running, which compositors set for
     /// the fullscreen game.
     Vrr,
@@ -86,6 +92,7 @@ struct Session {
     placement: Placement,
     output: Option<String>,
     placed: Option<Instant>,
+    toggles: u32,
 }
 
 pub fn start() -> std::io::Result<Handle> {
@@ -145,6 +152,7 @@ impl Engine {
         match command {
             Command::SetMode(mode) => self.config.mode = mode,
             Command::SetDisplay(display) => self.config.display = display,
+            Command::SetOverlay(show) => self.config.overlay = show,
             Command::InstallLayer => {
                 self.notice = Some(match layer::install() {
                     Ok(path) => format!("Layer registered in {}. Restart running games to pick it up.", path.display()),
@@ -168,6 +176,13 @@ impl Engine {
         self.scan();
         let now = now_ns();
         let now_s = now as f64 / 1e9;
+        let presses = self.sessions.values_mut().fold(0u32, |presses, s| {
+            let toggles = s.page.toggles();
+            presses.wrapping_add(toggles.wrapping_sub(std::mem::replace(&mut s.toggles, toggles)))
+        });
+        if presses % 2 == 1 {
+            self.apply(Command::SetOverlay(!self.config.overlay));
+        }
         let mut active: Option<(&Session, u64)> = None;
         for session in self.sessions.values_mut() {
             let (fresh, end) = session.page.samples_since(session.read_to);
@@ -181,7 +196,12 @@ impl Engine {
                 session.output = placement::game_output(session.page.pid(), session.page.x11_window());
                 session.placed = Some(Instant::now());
             }
-            let target = pick_display(&self.displays, self.config.display.as_deref(), session.output.as_deref());
+            let target = pick_display(
+                &self.displays,
+                self.config.display.as_deref(),
+                session.output.as_deref(),
+                session.page.swap_extent(),
+            );
             if let Some((_, how)) = target {
                 session.placement = how;
             }
@@ -200,6 +220,13 @@ impl Engine {
                 }
             };
             session.page.set_target(cap.map_or(0, |c| c.interval_ns()), now);
+            let vrr = match target.map(|(d, _)| &d.vrr) {
+                Some(Vrr::Active) => VrrState::On,
+                Some(Vrr::Off) => VrrState::Off,
+                Some(Vrr::Unsupported) => VrrState::Unsupported,
+                None => VrrState::Unknown,
+            };
+            session.page.set_overlay(Overlay { show: self.config.overlay, vrr });
 
             let beat = session.page.heartbeat_ns();
             if now.saturating_sub(beat) < LIVE_NS && active.is_none_or(|(_, b)| beat > b) {
@@ -236,6 +263,7 @@ impl Engine {
             }
             match Mapping::attach(&path) {
                 Ok(page) => {
+                    let toggles = page.toggles();
                     let id = page.steam_app_id();
                     let name = (id != 0).then(|| steam::app_name(id)).flatten().unwrap_or_else(|| page.name());
                     self.sessions.insert(
@@ -251,6 +279,7 @@ impl Engine {
                             placement: Placement::Fastest,
                             output: None,
                             placed: None,
+                            toggles,
                         },
                     );
                 }
@@ -272,16 +301,30 @@ impl Engine {
 }
 
 /// The display a game is paced for: the one the user picked, else the one its window is on, else
-/// the one with VRR running, else the fastest.
+/// the one whose mode the game's swapchain matches, else the one with VRR running, else the
+/// fastest. Two displays of the same size are told apart by VRR.
 pub fn pick_display<'a>(
     displays: &'a [Display],
     chosen: Option<&str>,
     window: Option<&str>,
+    swap_extent: (u32, u32),
 ) -> Option<(&'a Display, Placement)> {
     let named = |name: Option<&str>| name.and_then(|c| displays.iter().find(|d| d.connector == c));
+    let sized: Vec<&Display> = displays
+        .iter()
+        .filter(|d| {
+            let (w, h) = (u32::from(d.width), u32::from(d.height));
+            swap_extent == (w, h) || swap_extent == (h, w)
+        })
+        .collect();
+    let by_size = match sized.as_slice() {
+        [one] => Some(*one),
+        many => many.iter().find(|d| d.vrr_active()).copied(),
+    };
     named(chosen)
         .map(|d| (d, Placement::Chosen))
         .or_else(|| named(window).map(|d| (d, Placement::Window)))
+        .or_else(|| by_size.map(|d| (d, Placement::Size)))
         .or_else(|| displays.iter().find(|d| d.vrr_active()).map(|d| (d, Placement::Vrr)))
         .or_else(|| {
             displays.iter().max_by(|a, b| a.refresh_hz.total_cmp(&b.refresh_hz)).map(|d| (d, Placement::Fastest))
@@ -338,7 +381,9 @@ mod tests {
     fn the_games_window_beats_a_faster_or_vrr_display() {
         let displays =
             [display("DP-1", 240., Vrr::Active), display("DP-2", 144., Vrr::Off), display("HDMI-A-1", 60., Vrr::Off)];
-        let pick = |chosen, window| pick_display(&displays, chosen, window).map(|(d, how)| (d.connector.as_str(), how));
+        let pick = |chosen, window| {
+            pick_display(&displays, chosen, window, (0, 0)).map(|(d, how)| (d.connector.as_str(), how))
+        };
         assert_eq!(pick(None, Some("HDMI-A-1")), Some(("HDMI-A-1", Placement::Window)));
         assert_eq!(pick(Some("DP-2"), Some("HDMI-A-1")), Some(("DP-2", Placement::Chosen)));
         assert_eq!(pick(None, None), Some(("DP-1", Placement::Vrr)));
@@ -346,8 +391,21 @@ mod tests {
         assert_eq!(pick(None, Some("DP-9")), Some(("DP-1", Placement::Vrr)));
         let fixed = [display("DP-1", 60., Vrr::Off), display("DP-2", 165., Vrr::Off)];
         assert_eq!(
-            pick_display(&fixed, None, None).map(|(d, h)| (d.connector.as_str(), h)),
+            pick_display(&fixed, None, None, (0, 0)).map(|(d, h)| (d.connector.as_str(), h)),
             Some(("DP-2", Placement::Fastest))
         );
+    }
+
+    #[test]
+    fn a_fullscreen_game_is_found_by_its_size() {
+        let mut tv = display("HDMI-A-1", 60., Vrr::Off);
+        (tv.width, tv.height) = (3840, 2160);
+        let displays = [display("DP-1", 240., Vrr::Active), tv, display("DP-2", 144., Vrr::Off)];
+        let pick = |extent| pick_display(&displays, None, None, extent).map(|(d, how)| (d.connector.as_str(), how));
+        assert_eq!(pick((3840, 2160)), Some(("HDMI-A-1", Placement::Size)));
+        // DP-1 and DP-2 are both 2560x1440: the one running VRR has the fullscreen game.
+        assert_eq!(pick((2560, 1440)), Some(("DP-1", Placement::Size)));
+        // A window smaller than any display says nothing.
+        assert_eq!(pick((1280, 720)), Some(("DP-1", Placement::Vrr)));
     }
 }
