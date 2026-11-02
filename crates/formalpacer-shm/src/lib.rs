@@ -122,7 +122,8 @@ impl Mapping {
 
     fn open(path: &Path, create: bool) -> io::Result<Self> {
         let c_path = CString::new(path.as_os_str().as_bytes())?;
-        let flags = libc::O_RDWR | libc::O_CLOEXEC | if create { libc::O_CREAT | libc::O_EXCL } else { 0 };
+        let flags =
+            libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOFOLLOW | if create { libc::O_CREAT | libc::O_EXCL } else { 0 };
         // SAFETY: plain syscalls on a path we own; every result is checked.
         unsafe {
             let fd = libc::open(c_path.as_ptr(), flags, 0o600);
@@ -136,9 +137,14 @@ impl Mapping {
                 return Err(err);
             }
             let mut st: libc::stat = std::mem::zeroed();
-            if libc::fstat(fd, &mut st) != 0 || (st.st_size as usize) < size {
+            // /dev/shm is shared by every user: only a regular file of ours that nobody else can
+            // write is a page.
+            let stat_ok = libc::fstat(fd, &mut st) == 0;
+            let ours =
+                st.st_mode & libc::S_IFMT == libc::S_IFREG && st.st_uid == libc::getuid() && st.st_mode & 0o077 == 0;
+            if !stat_ok || !ours || (st.st_size as usize) < size {
                 libc::close(fd);
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "page is too small"));
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "not a page of this user's"));
             }
             let ptr =
                 libc::mmap(std::ptr::null_mut(), size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd, 0);
@@ -266,6 +272,19 @@ mod tests {
         assert_eq!(layer.target(200, 1_000), 6_944_444);
         assert_eq!(layer.target(5_000, 1_000), 0);
         layer.unlink();
+
+        // A page anyone else can write, or a link to one, is refused.
+        let open = dir.join(format!("{}open", prefix()));
+        let linked = dir.join(format!("{}linked", prefix()));
+        let page = Mapping::create("x", 0).unwrap();
+        std::fs::rename(page.path(), &open).unwrap();
+        std::os::unix::fs::symlink(&open, &linked).unwrap();
+        assert!(Mapping::attach(&linked).is_err());
+        assert!(Mapping::attach(&open).is_ok());
+        std::fs::set_permissions(&open, std::os::unix::fs::PermissionsExt::from_mode(0o666)).unwrap();
+        assert!(Mapping::attach(&open).is_err());
+        std::fs::remove_file(&open).unwrap();
+        std::fs::remove_file(&linked).unwrap();
         std::fs::remove_dir(&dir).unwrap();
     }
 }
