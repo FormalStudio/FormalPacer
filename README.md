@@ -37,12 +37,18 @@ The planner takes the 95th percentile of the game's own frame time over the last
 |---|---|---|
 | Fixed refresh | The largest whole fraction of the refresh rate the game can hold, so every frame stays on screen for the same number of refreshes: the console 30/40/60 rule | 144 / 72 / 48 |
 | VRR on | Just under the refresh rate (`r - r²/3600`) when the game is fast, to stay inside the VRR window. Otherwise the highest steady rate in 5 fps steps, or a fraction of the refresh rate when that costs at most 10% | 138 / 85 / 48 |
-| VRR on, game below the VRR window | The panel repeats frames there, so fractions again | |
+| VRR on, game below the VRR window | A window of at least 2:1 (48 to 144 Hz, say) gets frames repeated by the driver, so steady rates still, down to 20 fps. A narrower one gets fractions again | |
 
 The cap drops as soon as the game can no longer hold it and only rises after the game has held
 the higher rate for five seconds, so it never hunts. A game locked to the refresh rate by vsync
 is recognised as such and not mistaken for a slow one. Loading screens and alt-tab gaps are left
 out of the numbers.
+
+Some engines (BeamNG, most large ones) build the next frame on other threads while the layer
+holds the present, so under a cap they look far faster than they are. When a raise has to be
+taken back within ten seconds, FormalPacer stops trusting that game's numbers for raising: it
+goes up one step at a time from then on, and waits 30 seconds before trying again after a failed
+step, doubling up to five minutes.
 
 ## Which display
 

@@ -12,10 +12,18 @@
 //!   refresh rate when the game is fast (`r - r²/3600`, which keeps frames inside the window
 //!   instead of hitting the vsync wall), and otherwise the highest steady rate in 5 fps steps,
 //!   snapped to a fraction of the refresh rate when that costs at most 10%.
-//! - Below the VRR window the panel repeats frames, so the fixed-refresh fractions apply again.
+//! - Below the VRR window: a panel whose window spans at least 2:1 gets each frame shown twice or
+//!   more by the driver (low framerate compensation), so steady rates stay smooth down to 20 fps.
+//!   On a narrower window the fixed-refresh fractions apply again.
 //!
 //! The cap drops at once when the game can no longer hold it, and rises only after the game has
 //! held the higher rate for five seconds, so it does not hunt.
+//!
+//! Work under a cap can lie. An engine that builds the next frame on other threads while the
+//! layer holds the present (BeamNG, most big engines) shows almost no work per frame, so it looks
+//! able to run far faster than it can. A raise that has to be taken back within ten seconds marks
+//! the game as such: from then on the cap rises one step at a time, and after a failed step it
+//! waits 30 seconds before trying again, doubling up to five minutes.
 
 use formalpacer_shm::Sample;
 
@@ -25,6 +33,10 @@ const HEADROOM: f64 = 0.92;
 /// Lower the cap when the game sustains less than the cap over this factor.
 const LOWER_AT: f64 = 0.97;
 const RAISE_AFTER_S: f64 = 5.0;
+/// A cap lowered this soon after it was raised was a raise the game could not hold.
+const FAILED_WITHIN_S: f64 = 10.0;
+const BACKOFF_START_S: f64 = 30.0;
+const BACKOFF_MAX_S: f64 = 300.0;
 const WINDOW_S: f64 = 2.0;
 const MIN_FPS: f64 = 20.0;
 /// Frames longer than this are loading hitches or alt-tabs, not the game's pace.
@@ -112,17 +124,22 @@ pub fn capacity(stats: &Stats, refresh_hz: f64) -> f64 {
 /// The best cap for a game that sustains `capacity_fps` on `display`. `None` when the game is
 /// too slow for any cap to help.
 pub fn plan(capacity_fps: f64, display: &Display) -> Option<Cap> {
+    plan_budget(capacity_fps * HEADROOM, display)
+}
+
+/// The best cap at or under `budget` fps.
+fn plan_budget(budget: f64, display: &Display) -> Option<Cap> {
     let refresh = display.refresh_hz;
-    let budget = capacity_fps * HEADROOM;
     if display.vrr_active() {
         let (vrr_min, vrr_max) = display.vrr_range.unwrap_or((VRR_FALLBACK_MIN, refresh));
         let ceiling = (refresh.min(vrr_max) - refresh * refresh / 3600.).floor();
         if budget >= ceiling {
             return Some(Cap { fps: ceiling, kind: CapKind::VrrCeiling });
         }
-        if budget >= vrr_min {
-            let steady = ((budget / 5.).floor() * 5.).max(vrr_min.ceil());
-            let snapped = fraction(refresh, steady).filter(|c| c.fps >= steady * SNAP_TOLERANCE && c.fps >= vrr_min);
+        let floor = if vrr_max >= 2. * vrr_min { MIN_FPS } else { vrr_min };
+        if budget >= floor {
+            let steady = ((budget / 5.).floor() * 5.).max(floor.ceil());
+            let snapped = fraction(refresh, steady).filter(|c| c.fps >= steady * SNAP_TOLERANCE && c.fps >= floor);
             return Some(snapped.unwrap_or(Cap { fps: steady, kind: CapKind::VrrSteady }));
         }
     }
@@ -136,12 +153,27 @@ fn fraction(refresh: f64, budget: f64) -> Option<Cap> {
         .find(|c| c.fps <= budget + 1e-6 && c.fps >= MIN_FPS)
 }
 
+/// The next cap above `current` that [`plan`] could pick.
+fn next_step(current: Cap, display: &Display) -> Option<Cap> {
+    let top = display.refresh_hz.ceil() as u32 + 1;
+    (current.fps.floor() as u32 + 1..=top)
+        .filter_map(|budget| plan_budget(f64::from(budget), display))
+        .find(|c| c.fps > current.fps + 0.01)
+}
+
 /// One game's cap over time, with the hysteresis described above.
 #[derive(Debug, Default)]
 pub struct Pacer {
     pub cap: Option<Cap>,
     higher_since: Option<f64>,
     short_ticks: u32,
+    /// When the cap last went up, until that raise has held for `FAILED_WITHIN_S`.
+    raised_at: Option<f64>,
+    /// A raise failed: the game's work under a cap is not to be trusted.
+    stepping: bool,
+    /// No raise before this time, after a failed one.
+    blocked_until: f64,
+    backoff_s: f64,
 }
 
 impl Pacer {
@@ -158,18 +190,30 @@ impl Pacer {
             return self.cap;
         };
         let wanted_fps = wanted.map_or(0., |c| c.fps);
+        if self.raised_at.is_some_and(|t| now_s - t > FAILED_WITHIN_S) {
+            self.raised_at = None;
+            self.backoff_s = BACKOFF_START_S;
+        }
         if !self.fits(current, display) {
             self.adopt(wanted);
         } else if capacity * LOWER_AT < current.fps {
             self.short_ticks += 1;
             if self.short_ticks >= 2 {
+                if self.raised_at.take().is_some() {
+                    self.stepping = true;
+                    let backoff = if self.backoff_s > 0. { self.backoff_s } else { BACKOFF_START_S };
+                    self.blocked_until = now_s + backoff;
+                    self.backoff_s = (backoff * 2.).min(BACKOFF_MAX_S);
+                }
                 self.adopt(wanted);
             }
-        } else if wanted_fps > current.fps + 0.01 {
+        } else if wanted_fps > current.fps + 0.01 && now_s >= self.blocked_until {
             self.short_ticks = 0;
             let since = *self.higher_since.get_or_insert(now_s);
             if now_s - since >= RAISE_AFTER_S {
-                self.adopt(wanted);
+                let raise = if self.stepping { next_step(current, display) } else { wanted };
+                self.adopt(raise);
+                self.raised_at = Some(now_s);
             }
         } else {
             self.short_ticks = 0;
@@ -242,8 +286,14 @@ mod tests {
         assert_eq!(fps(plan(60., &p)), 55.);
         // 75 is the steady rate and 72 is half of 144 within 10%: the fraction wins.
         assert_eq!(plan(84., &p), Some(Cap { fps: 72., kind: CapKind::Fraction(2) }));
-        // Under the VRR window the panel repeats frames, so fractions again.
+        // Under a 48-144 window the driver repeats frames: steady rates still, snapped to a
+        // fraction when it is close (40 to 36), not otherwise (35 stays, 28.8 is too far).
         assert_eq!(fps(plan(45., &p)), 36.);
+        assert_eq!(fps(plan(40., &p)), 35.);
+        // A 90-144 window has no frame repeating: fractions below it.
+        let mut narrow = panel(144., Vrr::Active);
+        narrow.vrr_range = Some((90., 144.));
+        assert_eq!(fps(plan(60., &narrow)), 48.);
         assert_eq!(fps(plan(300., &panel(240., Vrr::Active))), 224.);
     }
 
@@ -272,6 +322,35 @@ mod tests {
         // Small wobble under the headroom does not move the cap.
         assert_eq!(fps(pacer.update(&steady(149.), &p, 7.)), 144.);
         assert_eq!(fps(pacer.update(&steady(149.), &p, 7.5)), 144.);
+    }
+
+    #[test]
+    fn a_game_whose_work_lies_under_a_cap_climbs_one_step_at_a_time() {
+        let p = panel(144., Vrr::Active);
+        let mut pacer = Pacer::default();
+        // Uncapped, the game really runs at 40.
+        assert_eq!(fps(pacer.update(&steady(40.), &p, 0.)), 35.);
+        // Capped, its other threads work through the layer's sleep: it looks 50 times faster.
+        let looks_fast = steady(2000.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 1.)), 35.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 6.1)), 138.);
+        // It cannot hold that: back down, and no new try for 30 s however fast it looks.
+        assert_eq!(fps(pacer.update(&steady(40.), &p, 6.5)), 138.);
+        assert_eq!(fps(pacer.update(&steady(40.), &p, 6.75)), 35.);
+        for t in [7., 20., 35.7] {
+            assert_eq!(fps(pacer.update(&looks_fast, &p, t)), 35., "at {t}");
+        }
+        // Then, after the usual five seconds, one step up rather than back to 138.
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 37.)), 35.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 42.1)), 36.);
+        // 36 holds; the next step, 45, does not: down again, and the next try waits 60 s.
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 43.)), 36.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 48.1)), 45.);
+        assert_eq!(fps(pacer.update(&steady(40.), &p, 48.3)), 45.);
+        assert_eq!(fps(pacer.update(&steady(40.), &p, 48.55)), 35.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 100.)), 35.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 109.)), 35.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 114.1)), 36.);
     }
 
     #[test]
