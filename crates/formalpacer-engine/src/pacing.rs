@@ -12,9 +12,9 @@
 //!   refresh rate when the game is fast (`r - r²/3600`, which keeps frames inside the window
 //!   instead of hitting the vsync wall), and otherwise the highest steady rate in 5 fps steps,
 //!   snapped to a fraction of the refresh rate when that costs at most 10%.
-//! - Below the VRR window: a panel whose window spans at least 2:1 gets each frame shown twice or
-//!   more by the driver (low framerate compensation), so steady rates stay smooth down to 20 fps.
-//!   On a narrower window the fixed-refresh fractions apply again.
+//! - Never below the VRR window while VRR is on: under it the driver shows each frame twice or
+//!   more, which many panels show as flicker. A game that can just about reach the bottom of the
+//!   window is held there with less headroom; one that cannot gets no cap, since no cap helps.
 //!
 //! The cap drops at once when the game can no longer hold it, and rises only after the game has
 //! held the higher rate for five seconds, so it does not hunt.
@@ -136,12 +136,13 @@ fn plan_budget(budget: f64, display: &Display) -> Option<Cap> {
         if budget >= ceiling {
             return Some(Cap { fps: ceiling, kind: CapKind::VrrCeiling });
         }
-        let floor = if vrr_max >= 2. * vrr_min { MIN_FPS } else { vrr_min };
+        let floor = vrr_min.ceil().max(MIN_FPS);
         if budget >= floor {
-            let steady = ((budget / 5.).floor() * 5.).max(floor.ceil());
+            let steady = ((budget / 5.).floor() * 5.).max(floor);
             let snapped = fraction(refresh, steady).filter(|c| c.fps >= steady * SNAP_TOLERANCE && c.fps >= floor);
             return Some(snapped.unwrap_or(Cap { fps: steady, kind: CapKind::VrrSteady }));
         }
+        return (budget / HEADROOM >= floor).then_some(Cap { fps: floor, kind: CapKind::VrrSteady });
     }
     fraction(refresh, budget)
 }
@@ -286,14 +287,16 @@ mod tests {
         assert_eq!(fps(plan(60., &p)), 55.);
         // 75 is the steady rate and 72 is half of 144 within 10%: the fraction wins.
         assert_eq!(plan(84., &p), Some(Cap { fps: 72., kind: CapKind::Fraction(2) }));
-        // Under a 48-144 window the driver repeats frames: steady rates still, snapped to a
-        // fraction when it is close (40 to 36), not otherwise (35 stays, 28.8 is too far).
-        assert_eq!(fps(plan(45., &p)), 36.);
-        assert_eq!(fps(plan(40., &p)), 35.);
-        // A 90-144 window has no frame repeating: fractions below it.
-        let mut narrow = panel(144., Vrr::Active);
-        narrow.vrr_range = Some((90., 144.));
-        assert_eq!(fps(plan(60., &narrow)), 48.);
+        // Never under the 48 Hz floor: a game that reaches 48 is held there with less headroom,
+        // one that cannot is left alone.
+        assert_eq!(fps(plan(50., &p)), 48.);
+        assert_eq!(fps(plan(45., &p)), 0.);
+        // On a 30-144 panel, 30 is inside the window; 28.8 (a fifth of 144) and 24 are not.
+        let mut wide = panel(144., Vrr::Active);
+        wide.vrr_range = Some((30., 144.));
+        assert_eq!(fps(plan(35., &wide)), 30.);
+        assert_eq!(fps(plan(31., &wide)), 30.);
+        assert_eq!(fps(plan(28., &wide)), 0.);
         assert_eq!(fps(plan(300., &panel(240., Vrr::Active))), 224.);
     }
 
@@ -326,7 +329,8 @@ mod tests {
 
     #[test]
     fn a_game_whose_work_lies_under_a_cap_climbs_one_step_at_a_time() {
-        let p = panel(144., Vrr::Active);
+        let mut p = panel(144., Vrr::Active);
+        p.vrr_range = Some((30., 144.));
         let mut pacer = Pacer::default();
         // Uncapped, the game really runs at 40.
         assert_eq!(fps(pacer.update(&steady(40.), &p, 0.)), 35.);
