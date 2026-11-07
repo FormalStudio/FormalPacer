@@ -3,6 +3,7 @@
 //! overlay's picture and the hotkey that toggles it.
 
 pub mod game;
+pub mod gl;
 mod hotkey;
 pub mod library;
 pub mod overlay;

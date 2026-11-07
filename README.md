@@ -80,27 +80,33 @@ Wayland-native games. The setting is shared by every game.
 
 ## Windows
 
-On Windows a game is paced one of two ways, and nothing of FormalPacer's goes inside a game that
-runs under a kernel anti-cheat.
+On Windows a game is paced one of three ways, and nothing of FormalPacer's goes inside a game
+that runs under a kernel anti-cheat.
 
 - Vulkan games get the same layer as on Linux, registered for the user under
   `HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers`, with live pacing and the overlay. The layer
   passes every call straight through in a game protected by Easy Anti-Cheat, BattlEye, Vanguard,
   Ricochet or VAC: it finds the anti-cheat's files next to the game (`EasyAntiCheat`, `BattlEye`,
   `*_EAC_EOS.exe`, `*_BE.exe`) or knows the game by name.
-- Every other game, Direct3D and OpenGL ones and anti-cheat games like Fortnite, is measured
-  from outside through Event Tracing for Windows with Intel's
-  [PresentMon](https://github.com/GameTechDev/PresentMon), and its cap goes to the NVIDIA
+- Direct3D 11, Direct3D 12 and OpenGL games without an anti-cheat get a hook loaded into the
+  running game (`formalpacer_inject.dll`), also with live pacing and the overlay. It hooks the
+  DXGI present calls and `wglSwapBuffers`, sleeps before each present like the layer does, and
+  clears the overlay into the back buffer. It goes in while the game runs, so there is nothing to
+  restart, and it stays out of a game the layer is already in. 32-bit games and games running as
+  administrator are out of its reach.
+- Anti-cheat games like Fortnite, and any game the hook cannot get into, are measured from
+  outside through Event Tracing for Windows with Intel's
+  [PresentMon](https://github.com/GameTechDev/PresentMon), and their cap goes to the NVIDIA
   driver's frame rate limiter in the game's driver profile (Max Frame Rate in the NVIDIA app).
   Nothing is loaded into the game. The driver reads the profile when a game starts, so a cap
   planned during one run holds from the next launch, and the window says what the driver holds
   for the run now going. Only a game that has been in the foreground gets a driver cap, and
   switching pacing off puts back the limit each game had before.
 
-RTSS and Special K hook the game's present call instead. Anti-cheats let RTSS do that because its
-DLLs are signed and on their allow lists; an unsigned DLL in Fortnite is exactly what Easy
-Anti-Cheat looks for, and Valve banned CS2 players in 2023 for AMD's Anti-Lag+, which hooked the
-game's DLLs. Event tracing and the driver's own limiter touch no game process.
+RTSS and Special K hook anti-cheat games too. Anti-cheats let RTSS do that because its DLLs are
+signed and on their allow lists; an unsigned DLL in Fortnite is exactly what Easy Anti-Cheat looks
+for, and Valve banned CS2 players in 2023 for AMD's Anti-Lag+, which hooked the game's DLLs. Event
+tracing and the driver's own limiter touch no game process.
 
 A game is anything presenting from where the stores install games (Steam, Epic, GOG, Xbox, Riot,
 EA, Ubisoft, Battle.net), apart from their launchers and tools such as Wallpaper Engine, or
@@ -108,12 +114,14 @@ anything whose own window is in the foreground and covers its monitor. Steam and
 their store name. Displays come from the Windows display configuration (exact refresh rate, the
 EDID's VRR range) and G-SYNC state from the NVIDIA driver.
 
-Reading frame times needs an administrator or a member of Performance Log Users. FormalPacer runs
-as the user, so the window offers to add you to the group: one consent prompt, then sign out and
-back in.
+Reading frame times from outside needs an administrator or a member of Performance Log Users.
+FormalPacer runs as the user, so the window offers to add you to the group: one consent prompt,
+then sign out and back in. Until then a game without an anti-cheat still gets the hook once its
+window is in the foreground and fills its monitor.
 
 Not done yet on Windows: games measured from outside have no in-game overlay, and AMD and Intel
-drivers have no limiter FormalPacer can set, so there those games are measured only.
+drivers have no limiter FormalPacer can set, so there those games are measured only. The overlay
+is drawn on 8-bit and scRGB back buffers; HDR10 ones get pacing without it.
 
 ## Features
 
@@ -161,8 +169,9 @@ cd FormalPacer
 powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
 ```
 
-It builds the app and the layer, downloads PresentMon (pinned, hash checked), installs them in
-`%LOCALAPPDATA%\Programs\FormalPacer`, registers the layer and starts FormalPacer at sign-in.
+It builds the app, the layer and the hook, downloads PresentMon (pinned, hash checked), installs
+them in `%LOCALAPPDATA%\Programs\FormalPacer`, registers the layer, adds FormalPacer to the Start
+menu and starts it at sign-in.
 `nd package windows` builds a `Setup.exe` with the same files once the script has fetched
 PresentMon.
 

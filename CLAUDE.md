@@ -11,11 +11,15 @@ window that can close without stopping pacing (`set_quit_when_windows_close(fals
 instance through `nd-ipc`). nd is on `branch = "main"`, pinned by `Cargo.lock`, as in trove.
 
 On Windows the same layer is registered in `HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers` and the
-page is a mapped file in `%TEMP%\FormalPacer`. Games without the layer, and every game under a
-kernel anti-cheat (`formalpacer-hook/src/library.rs`), are measured from outside by PresentMon
-(`engine/src/presentmon.rs`, a hidden child process) and capped through the NVIDIA driver profile
-(`nvidia.rs`, `driver.rs`), which applies from the game's next launch. Never add anything that
-loads into an anti-cheat game. Build there with `RUSTUP_TOOLCHAIN=1.95.0-x86_64-pc-windows-msvc`
+page is a mapped file in `%TEMP%\FormalPacer`. Direct3D and OpenGL games get
+`crates/formalpacer-inject`, a DLL the engine loads into the running game (`process::inject`)
+that hooks the DXGI presents and `wglSwapBuffers` with MinHook and reports through the same page;
+the OpenGL overlay is shared with Linux in `formalpacer-hook/src/gl.rs`. Every game under a kernel
+anti-cheat (`formalpacer-hook/src/library.rs`), and any game the hook did not reach within five
+seconds, is measured from outside by PresentMon (`engine/src/presentmon.rs`, a hidden child
+process) and capped through the NVIDIA driver profile (`nvidia.rs`, `driver.rs`), which applies
+from the game's next launch. Never add anything that loads into an anti-cheat game: the engine
+checks before injecting and the DLL checks again. Build there with `RUSTUP_TOOLCHAIN=1.95.0-x86_64-pc-windows-msvc`
 (the host default is the GNU toolchain).
 
 The planner's rules and the display order are in the README and in the module docs of

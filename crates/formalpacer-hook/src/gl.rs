@@ -1,12 +1,25 @@
-//! The overlay as scissored `glClear`s into the default framebuffer. Every GL and GLES version
+//! The OpenGL overlay, shared by the Linux `LD_PRELOAD` hook and the Windows hook: scissored
+//! `glClear`s into the default framebuffer. Every GL and GLES version
 //! has them, and they leave no program, texture or buffer bound behind the game's back: only a
 //! handful of state values, all put back before the swap.
 
 use std::ffi::{CStr, c_void};
 use std::sync::Mutex;
 
-use formalpacer_hook::overlay::{BACKGROUND, COLORS, MARGIN};
-use formalpacer_hook::pacer::Frame;
+use crate::overlay::{BACKGROUND, COLORS, MARGIN};
+
+/// Looks up `$name` with `$lookup` as a `$ty`, returning `None` from the caller if it is missing.
+macro_rules! load {
+    ($lookup:expr, $name:literal, $ty:ty) => {{
+        let f: *mut std::ffi::c_void = $lookup($name);
+        if f.is_null() {
+            return None;
+        }
+        // SAFETY: the driver hands back the entry point of the name asked for, of that type.
+        unsafe { std::mem::transmute::<*mut std::ffi::c_void, $ty>(f) }
+    }};
+}
+use crate::pacer::Frame;
 
 const GL_COLOR_BUFFER_BIT: u32 = 0x4000;
 const GL_SCISSOR_BOX: u32 = 0x0C10;
@@ -20,17 +33,17 @@ const GL_DRAW_FRAMEBUFFER: u32 = 0x8CA9;
 const GL_FRAMEBUFFER: u32 = 0x8D40;
 const GL_FRAMEBUFFER_SRGB: u32 = 0x8DB9;
 
-type GetString = unsafe extern "C" fn(u32) -> *const u8;
-type GetIntegerv = unsafe extern "C" fn(u32, *mut i32);
-type GetFloatv = unsafe extern "C" fn(u32, *mut f32);
-type GetBooleanv = unsafe extern "C" fn(u32, *mut u8);
-type IsEnabled = unsafe extern "C" fn(u32) -> u8;
-type Capability = unsafe extern "C" fn(u32);
-type Scissor = unsafe extern "C" fn(i32, i32, i32, i32);
-type ClearColor = unsafe extern "C" fn(f32, f32, f32, f32);
-type ColorMask = unsafe extern "C" fn(u8, u8, u8, u8);
-type Clear = unsafe extern "C" fn(u32);
-type BindFramebuffer = unsafe extern "C" fn(u32, u32);
+type GetString = unsafe extern "system" fn(u32) -> *const u8;
+type GetIntegerv = unsafe extern "system" fn(u32, *mut i32);
+type GetFloatv = unsafe extern "system" fn(u32, *mut f32);
+type GetBooleanv = unsafe extern "system" fn(u32, *mut u8);
+type IsEnabled = unsafe extern "system" fn(u32) -> u8;
+type Capability = unsafe extern "system" fn(u32);
+type Scissor = unsafe extern "system" fn(i32, i32, i32, i32);
+type ClearColor = unsafe extern "system" fn(f32, f32, f32, f32);
+type ColorMask = unsafe extern "system" fn(u8, u8, u8, u8);
+type Clear = unsafe extern "system" fn(u32);
+type BindFramebuffer = unsafe extern "system" fn(u32, u32);
 
 pub struct Gl {
     get_string: GetString,
@@ -47,7 +60,7 @@ pub struct Gl {
     bind_framebuffer: BindFramebuffer,
 }
 
-/// `(x, y, width, value)`, as [`formalpacer_hook::overlay::Bitmap::runs`] gives them.
+/// `(x, y, width, value)`, as [`crate::overlay::Bitmap::runs`] gives them.
 type Run = (u32, u32, u32, u8);
 
 /// The bitmap's runs, kept until its generation changes.

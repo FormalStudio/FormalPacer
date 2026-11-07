@@ -7,7 +7,7 @@
 //! directly (our exports come first), `glXGetProcAddress`/`eglGetProcAddress`, and
 //! `dlsym(dlopen("libGL.so.1"), ...)`, which SDL and most engines use.
 
-// Windows games are measured from outside instead; see the engine's `presentmon`.
+// Windows has its own hook for OpenGL and Direct3D games: `crates/formalpacer-inject`.
 #![cfg(unix)]
 
 /// Looks up `$name` with `$lookup` as a `$ty`, returning `None` from the caller if it is missing.
@@ -24,13 +24,12 @@ macro_rules! load {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod dlsym;
-mod draw;
 
 use std::ffi::{CStr, c_char, c_int, c_uint, c_ulong, c_void};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
-use draw::Gl;
+use formalpacer_hook::gl::Gl;
 use formalpacer_hook::game::{self, Game};
 use formalpacer_hook::pacer;
 

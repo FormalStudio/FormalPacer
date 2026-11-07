@@ -1886,6 +1886,7 @@ dependencies = [
  "anyhow",
  "ash",
  "ash-window",
+ "windows 0.62.2",
  "winit",
 ]
 
@@ -2127,6 +2128,15 @@ dependencies = [
  "formalpacer-shm",
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "formalpacer-inject"
+version = "0.1.0"
+dependencies = [
+ "formalpacer-hook",
+ "minhook",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -4124,6 +4134,16 @@ dependencies = [
  "log",
  "objc",
  "paste",
+]
+
+[[package]]
+name = "minhook"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "455e088cb1600ffa5f1524c9702c9eeb0ba3604e0f4932efa165b99973272a8d"
+dependencies = [
+ "cc",
+ "tracing",
 ]
 
 [[package]]

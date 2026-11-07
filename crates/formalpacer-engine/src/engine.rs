@@ -52,8 +52,9 @@ pub struct Game {
 /// What holds the cap for a game.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Limiter {
-    /// The layer, inside the game, from the next frame.
-    Layer,
+    /// FormalPacer's own code inside the game (the Vulkan layer, or the hook on Windows), from
+    /// the next frame.
+    InGame,
     /// The NVIDIA driver, from the game's next launch: it reads its profile when a game starts.
     /// `running` is what it holds for the run now going, if anything.
     Driver { running: Option<u32>, protected: bool },
@@ -166,6 +167,10 @@ struct Engine {
     /// Executables of processes PresentMon has seen, by pid.
     #[cfg(windows)]
     exes: HashMap<u32, Option<PathBuf>>,
+    /// Games the hook was loaded into, and when; the hook's page is waited for before they are
+    /// measured from outside instead.
+    #[cfg(windows)]
+    injected: HashMap<u32, Instant>,
     notice: Option<String>,
     last: Option<Snapshot>,
 }
@@ -201,6 +206,8 @@ impl Engine {
             presentmon: presentmon::Feed::start(),
             #[cfg(windows)]
             exes: HashMap::new(),
+            #[cfg(windows)]
+            injected: HashMap::new(),
             notice: None,
             last: None,
         }
@@ -384,7 +391,7 @@ impl Engine {
                 display: s.display.clone(),
                 placement: s.placement,
                 limiter: match &s.feed {
-                    Feed::Page(_) => Limiter::Layer,
+                    Feed::Page(_) => Limiter::InGame,
                     #[cfg(windows)]
                     Feed::Measured { driver, .. } => driver.limiter(),
                 },
@@ -441,16 +448,24 @@ impl Engine {
         });
     }
 
-    /// Games PresentMon sees that the layer does not pace: Direct3D and OpenGL games, Vulkan games
+    /// Games PresentMon sees that no page reports: Direct3D and OpenGL games, Vulkan games
     /// without the layer, and every game under a kernel anti-cheat. A game is a process installed
     /// where stores put games, or one whose own window is in the foreground and fills its monitor.
+    /// The hook goes into each one without an anti-cheat, which then reports through a page like
+    /// the layer does; a game it does not reach in time is measured from outside.
     #[cfg(windows)]
     fn scan_presenters(&mut self) {
         use formalpacer_hook::library;
         let paced: HashSet<u32> = self.sessions.values().map(|s| s.feed.pid()).collect();
         let foreground = crate::window::foreground_pid();
-        let presenters = self.presentmon.presenters();
+        let mut presenters = self.presentmon.presenters();
+        let presenting: HashSet<u32> = presenters.iter().map(|p| p.pid).collect();
+        // The hook needs no PresentMon: a foreground game still gets it when PresentMon is denied.
+        if foreground != 0 && !presenting.contains(&foreground) {
+            presenters.push(presentmon::Presenter { pid: foreground, name: String::new() });
+        }
         self.exes.retain(|pid, _| presenters.iter().any(|p| p.pid == *pid));
+        self.injected.retain(|pid, _| presenters.iter().any(|p| p.pid == *pid));
         for presenter in presenters {
             let pid = presenter.pid;
             if paced.contains(&pid) || pid == std::process::id() {
@@ -463,12 +478,40 @@ impl Engine {
                 continue;
             }
             let protected = library::anticheat(&exe).is_some();
+            if !protected {
+                match self.injected.get(&pid) {
+                    None => {
+                        if let Some(hook) = hook_dll() {
+                            // A game that refuses the hook is measured after the same wait.
+                            let _ = process::inject(pid, &hook);
+                        }
+                        self.injected.insert(pid, Instant::now());
+                        continue;
+                    }
+                    Some(at) if at.elapsed() < HOOK_WAIT => continue,
+                    Some(_) => {}
+                }
+            }
+            if !presenting.contains(&pid) {
+                continue;
+            }
             let driver = driver::Cap::new(&presenter.name, protected);
             let name = steam::app_name_for(&exe).unwrap_or(presenter.name);
             let feed = Feed::Measured { pid, driver, foreground: pid == foreground };
             self.sessions.insert(Key::Process(pid), Session::new(feed, name));
         }
     }
+}
+
+/// How long a game the hook went into has to report through a page.
+#[cfg(windows)]
+const HOOK_WAIT: Duration = Duration::from_secs(5);
+
+/// The hook, installed beside FormalPacer.
+#[cfg(windows)]
+fn hook_dll() -> Option<PathBuf> {
+    let dll = std::env::current_exe().ok()?.parent()?.join("formalpacer_inject.dll");
+    dll.is_file().then_some(dll)
 }
 
 impl Session {

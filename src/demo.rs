@@ -47,7 +47,7 @@ pub fn snapshot() -> Snapshot {
             cap: Some(Cap { fps: 143.973 / 3., kind: CapKind::Fraction(3) }),
             display: "DP-1".into(),
             placement: Placement::Window,
-            limiter: Limiter::Layer,
+            limiter: Limiter::InGame,
         }),
         notice: None,
     }

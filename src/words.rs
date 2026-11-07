@@ -43,11 +43,11 @@ pub fn cap(snapshot: &Snapshot, game: &Game) -> String {
     }
 }
 
-/// Who holds the cap, when it is not the layer in the game from the next frame.
+/// Who holds the cap, when it is not FormalPacer inside the game from the next frame.
 pub fn limiter(game: &Game) -> Option<String> {
     const ANTICHEAT: &str = "It runs under a kernel anti-cheat, so nothing of FormalPacer's goes inside it.";
     match &game.limiter {
-        Limiter::Layer => None,
+        Limiter::InGame => None,
         Limiter::Driver { running, protected } => {
             let now = match running {
                 Some(fps) => format!("This run is held at {fps} fps."),
@@ -60,22 +60,22 @@ pub fn limiter(game: &Game) -> Option<String> {
             Some(format!("{ANTICHEAT} Without an NVIDIA driver to hold a cap, it is measured only."))
         }
         Limiter::None { protected: false } => {
-            Some("Measured only: without an NVIDIA driver, only Vulkan games can be capped.".into())
+            Some("Measured only: the hook could not get into this game, and without an NVIDIA driver nothing else can cap it.".into())
         }
     }
 }
 
-/// Why games without the layer are not measured, if they are not.
+/// Why anti-cheat games are not measured, if they are not.
 pub fn outside(snapshot: &Snapshot) -> Option<&'static str> {
     match snapshot.outside.as_ref()? {
         Outside::Denied => Some(
-            "Direct3D and anti-cheat games aren't measured: Windows only lets administrators and Performance Log Users read frame times",
+            "Anti-cheat games aren't measured: Windows only lets administrators and Performance Log Users read frame times",
         ),
         Outside::Missing => {
-            Some("Direct3D and anti-cheat games aren't measured: PresentMon.exe is missing next to FormalPacer")
+            Some("Anti-cheat games aren't measured: PresentMon.exe is missing next to FormalPacer")
         }
         Outside::Failed(_) => {
-            Some("Direct3D and anti-cheat games aren't measured: PresentMon stopped and is restarting")
+            Some("Anti-cheat games aren't measured: PresentMon stopped and is restarting")
         }
         Outside::Starting | Outside::Running => None,
     }
