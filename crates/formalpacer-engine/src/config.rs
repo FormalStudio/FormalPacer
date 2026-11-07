@@ -1,5 +1,6 @@
-//! `~/.config/formalpacer/config.toml`.
+//! `~/.config/formalpacer/config.toml`, or `%APPDATA%\FormalPacer\config.toml` on Windows.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -22,14 +23,24 @@ pub struct Config {
     pub display: Option<String>,
     /// Frame rate, cap and VRR in the game's top-left corner.
     pub overlay: bool,
+    /// Windows: games whose NVIDIA driver limit FormalPacer has set, with the limit each had
+    /// before (0 for none), to put back when pacing is switched off.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub driver_caps: BTreeMap<String, u32>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { mode: Mode::Auto, display: None, overlay: true }
+        Self { mode: Mode::Auto, display: None, overlay: true, driver_caps: BTreeMap::new() }
     }
 }
 
+#[cfg(windows)]
+fn path() -> Option<PathBuf> {
+    std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("FormalPacer\\config.toml"))
+}
+
+#[cfg(not(windows))]
 fn path() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)

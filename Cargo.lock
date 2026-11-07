@@ -2103,11 +2103,12 @@ version = "0.1.0"
 dependencies = [
  "drm",
  "flume 0.11.1",
+ "formalpacer-hook",
  "formalpacer-shm",
- "libc",
  "serde",
  "serde_json",
  "toml 0.9.12+spec-1.1.0",
+ "windows-sys 0.61.2",
  "x11rb",
 ]
 
@@ -2125,6 +2126,7 @@ version = "0.1.0"
 dependencies = [
  "formalpacer-shm",
  "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2141,6 +2143,7 @@ name = "formalpacer-shm"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

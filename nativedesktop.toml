@@ -2,6 +2,11 @@
 id = "dev.formalsnake.formalpacer"
 display_name = "FormalPacer"
 
+# Beside formalpacer.exe: the Vulkan layer, and Intel's PresentMon (MIT), which
+# scripts/install-windows.ps1 downloads into target/windows.
+[windows]
+files = ["target/release/formalpacer_layer.dll", "target/windows/PresentMon.exe"]
+
 # Updates: `nd release keygen` prints public_key; the feed is any static host serving the
 # directory `nd release` writes (`nd release serve` for local tests).
 # [updates]

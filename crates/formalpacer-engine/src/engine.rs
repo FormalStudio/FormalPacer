@@ -1,6 +1,6 @@
-//! The engine thread: attaches to every game the layer reports, keeps each one's cap, and sends
-//! the app a snapshot whenever what it would show changes. It runs whether or not a window is
-//! open, so pacing goes on from the tray.
+//! The engine thread: attaches to every game the layer reports (and on Windows every game
+//! PresentMon sees presenting), keeps each one's cap, and sends the app a snapshot whenever what it
+//! would show changes. It runs whether or not a window is open, so pacing goes on from the tray.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -12,7 +12,9 @@ use crate::config::{self, Config, Mode};
 use crate::display::{self, Display, Vrr};
 use crate::layer::{self, LayerState};
 use crate::pacing::{self, Cap, Pacer, Stats};
-use crate::{placement, steam};
+#[cfg(windows)]
+use crate::{driver, presentmon};
+use crate::{placement, process, steam};
 
 const TICK: Duration = Duration::from_millis(250);
 const IDLE_TICK: Duration = Duration::from_secs(1);
@@ -30,6 +32,9 @@ pub enum Command {
     SetDisplay(Option<String>),
     SetOverlay(bool),
     InstallLayer,
+    /// Windows: asks for an administrator to add this user to Performance Log Users, which
+    /// PresentMon needs.
+    JoinPerformanceLogUsers,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -41,6 +46,32 @@ pub struct Game {
     /// Connector of the display the cap was planned for.
     pub display: String,
     pub placement: Placement,
+    pub limiter: Limiter,
+}
+
+/// What holds the cap for a game.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Limiter {
+    /// The layer, inside the game, from the next frame.
+    Layer,
+    /// The NVIDIA driver, from the game's next launch: it reads its profile when a game starts.
+    /// `running` is what it holds for the run now going, if anything.
+    Driver { running: Option<u32>, protected: bool },
+    /// Nothing can: the game is measured only. `protected` when a kernel anti-cheat is why the
+    /// layer stays out and there is no NVIDIA driver to ask instead.
+    None { protected: bool },
+}
+
+/// Measuring games from outside, through PresentMon on Windows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Outside {
+    Starting,
+    Running,
+    /// Not an administrator and not in the Performance Log Users group.
+    Denied,
+    /// `PresentMon.exe` is not next to FormalPacer.
+    Missing,
+    Failed(String),
 }
 
 /// How the game's display was found.
@@ -64,6 +95,8 @@ pub enum Placement {
 pub struct Snapshot {
     pub config: Config,
     pub layer: LayerState,
+    /// How games without the layer are measured; `None` where only the layer measures (Linux).
+    pub outside: Option<Outside>,
     pub displays: Vec<Display>,
     pub game: Option<Game>,
     /// The outcome of the last layer install, for the app to show once.
@@ -81,8 +114,25 @@ pub struct Handle {
     pub snapshots: flume::Receiver<Snapshot>,
 }
 
+/// Where a session's frames come from and where its cap goes.
+enum Feed {
+    /// A page the layer in the game writes and reads.
+    Page(Mapping),
+    /// PresentMon measures it; the driver holds its cap. Only a game that has been in the
+    /// foreground gets one, so a launcher or tool presenting behind it never does.
+    #[cfg(windows)]
+    Measured { pid: u32, driver: driver::Cap, foreground: bool },
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum Key {
+    Page(PathBuf),
+    #[cfg(windows)]
+    Process(u32),
+}
+
 struct Session {
-    page: Mapping,
+    feed: Feed,
     name: String,
     read_to: u64,
     samples: VecDeque<Sample>,
@@ -109,10 +159,33 @@ struct Engine {
     layer: LayerState,
     displays: Vec<Display>,
     probed: Option<Instant>,
-    sessions: HashMap<PathBuf, Session>,
-    rejected: HashSet<PathBuf>,
+    sessions: HashMap<Key, Session>,
+    rejected: HashSet<Key>,
+    #[cfg(windows)]
+    presentmon: presentmon::Feed,
+    /// Executables of processes PresentMon has seen, by pid.
+    #[cfg(windows)]
+    exes: HashMap<u32, Option<PathBuf>>,
     notice: Option<String>,
     last: Option<Snapshot>,
+}
+
+impl Feed {
+    fn pid(&self) -> u32 {
+        match self {
+            Self::Page(page) => page.pid(),
+            #[cfg(windows)]
+            Self::Measured { pid, .. } => *pid,
+        }
+    }
+
+    fn toggles(&self) -> u32 {
+        match self {
+            Self::Page(page) => page.toggles(),
+            #[cfg(windows)]
+            Self::Measured { .. } => 0,
+        }
+    }
 }
 
 impl Engine {
@@ -124,9 +197,20 @@ impl Engine {
             probed: None,
             sessions: HashMap::new(),
             rejected: HashSet::new(),
+            #[cfg(windows)]
+            presentmon: presentmon::Feed::start(),
+            #[cfg(windows)]
+            exes: HashMap::new(),
             notice: None,
             last: None,
         }
+    }
+
+    fn outside(&self) -> Option<Outside> {
+        #[cfg(windows)]
+        return Some(self.presentmon.state());
+        #[cfg(not(windows))]
+        None
     }
 
     fn run(mut self, commands: &flume::Receiver<Command>, snapshots: &flume::Sender<Snapshot>) {
@@ -150,7 +234,20 @@ impl Engine {
 
     fn apply(&mut self, command: Command) {
         match command {
-            Command::SetMode(mode) => self.config.mode = mode,
+            Command::SetMode(mode) => {
+                self.config.mode = mode;
+                #[cfg(windows)]
+                if mode == Mode::Off {
+                    if let Err(e) = driver::restore_all(&mut self.config) {
+                        self.notice = Some(format!("Could not clear the driver's frame rate limits: {e}"));
+                    }
+                    for session in self.sessions.values_mut() {
+                        if let Feed::Measured { driver, .. } = &mut session.feed {
+                            driver.restored();
+                        }
+                    }
+                }
+            }
             Command::SetDisplay(display) => self.config.display = display,
             Command::SetOverlay(show) => self.config.overlay = show,
             Command::InstallLayer => {
@@ -159,6 +256,16 @@ impl Engine {
                     Err(e) => format!("Could not register the layer: {e}"),
                 });
                 self.probed = None;
+                return;
+            }
+            Command::JoinPerformanceLogUsers => {
+                #[cfg(windows)]
+                {
+                    self.notice = Some(match crate::elevate::join_performance_log_users() {
+                        Ok(()) => "Added to Performance Log Users. Sign out and back in for it to take effect.".into(),
+                        Err(e) => format!("Could not join Performance Log Users: {e}"),
+                    });
+                }
                 return;
             }
         }
@@ -177,15 +284,31 @@ impl Engine {
         let now = now_ns();
         let now_s = now as f64 / 1e9;
         let presses = self.sessions.values_mut().fold(0u32, |presses, s| {
-            let toggles = s.page.toggles();
+            let toggles = s.feed.toggles();
             presses.wrapping_add(toggles.wrapping_sub(std::mem::replace(&mut s.toggles, toggles)))
         });
         if presses % 2 == 1 {
             self.apply(Command::SetOverlay(!self.config.overlay));
         }
+        let outside = self.outside();
+        #[cfg(windows)]
+        let foreground = crate::window::foreground_pid();
+        #[cfg(not(windows))]
+        let foreground = 0;
         let mut active: Option<(&Session, u64)> = None;
         for session in self.sessions.values_mut() {
-            let (fresh, end) = session.page.samples_since(session.read_to);
+            let pid = session.feed.pid();
+            let (fresh, end, heartbeat, x11_window, swap_extent) = match &session.feed {
+                Feed::Page(page) => {
+                    let (fresh, end) = page.samples_since(session.read_to);
+                    (fresh, end, page.heartbeat_ns(), page.x11_window(), page.swap_extent())
+                }
+                #[cfg(windows)]
+                Feed::Measured { pid, .. } => {
+                    let (fresh, end) = self.presentmon.samples_since(*pid, session.read_to);
+                    (fresh, end, self.presentmon.heartbeat_ns(*pid), 0, crate::window::game_extent(*pid))
+                }
+            };
             session.read_to = end;
             session.samples.extend(fresh);
             let excess = session.samples.len().saturating_sub(KEEP_SAMPLES);
@@ -193,15 +316,11 @@ impl Engine {
             session.stats = pacing::stats(session.samples.make_contiguous());
 
             if session.placed.is_none_or(|t| t.elapsed() >= PROBE_EVERY) {
-                session.output = placement::game_output(session.page.pid(), session.page.x11_window());
+                session.output = placement::game_output(pid, x11_window);
                 session.placed = Some(Instant::now());
             }
-            let target = pick_display(
-                &self.displays,
-                self.config.display.as_deref(),
-                session.output.as_deref(),
-                session.page.swap_extent(),
-            );
+            let target =
+                pick_display(&self.displays, self.config.display.as_deref(), session.output.as_deref(), swap_extent);
             if let Some((_, how)) = target {
                 session.placement = how;
             }
@@ -219,31 +338,56 @@ impl Engine {
                     None
                 }
             };
-            session.page.set_target(cap.map_or(0, |c| c.interval_ns()), now);
             let vrr = match target.map(|(d, _)| &d.vrr) {
                 Some(Vrr::Active) => VrrState::On,
                 Some(Vrr::Off) => VrrState::Off,
                 Some(Vrr::Unsupported) => VrrState::Unsupported,
                 None => VrrState::Unknown,
             };
-            session.page.set_overlay(Overlay { show: self.config.overlay, vrr });
+            match &mut session.feed {
+                Feed::Page(page) => {
+                    page.set_target(cap.map_or(0, |c| c.interval_ns()), now);
+                    page.set_overlay(Overlay { show: self.config.overlay, vrr });
+                }
+                #[cfg(windows)]
+                Feed::Measured { driver, foreground: seen, pid } => {
+                    *seen |= *pid == foreground;
+                    if self.config.mode == Mode::Auto
+                        && *seen
+                        && let Err(e) = driver.want(cap.map(|c| c.fps), &mut self.config)
+                    {
+                        self.notice = Some(format!("Could not set the driver's frame rate limit: {e}"));
+                    }
+                }
+            }
 
-            let beat = session.page.heartbeat_ns();
-            if now.saturating_sub(beat) < LIVE_NS && active.is_none_or(|(_, b)| beat > b) {
-                active = Some((session, beat));
+            // The game in the foreground is the one shown; otherwise the one that presented last.
+            let rank = if pid == foreground { u64::MAX } else { heartbeat };
+            if now.saturating_sub(heartbeat) < LIVE_NS && active.is_none_or(|(_, b)| rank > b) {
+                active = Some((session, rank));
             }
         }
         Snapshot {
             config: self.config.clone(),
             layer: self.layer.clone(),
+            outside,
             displays: self.displays.clone(),
             game: active.map(|(s, _)| Game {
                 name: s.name.clone(),
-                steam_app_id: s.page.steam_app_id(),
+                steam_app_id: match &s.feed {
+                    Feed::Page(page) => page.steam_app_id(),
+                    #[cfg(windows)]
+                    Feed::Measured { .. } => 0,
+                },
                 stats: rounded(s.stats),
                 cap: s.pacer.cap,
                 display: s.display.clone(),
                 placement: s.placement,
+                limiter: match &s.feed {
+                    Feed::Page(_) => Limiter::Layer,
+                    #[cfg(windows)]
+                    Feed::Measured { driver, .. } => driver.limiter(),
+                },
             }),
             notice: self.notice.clone(),
         }
@@ -253,50 +397,96 @@ impl Engine {
     fn scan(&mut self) {
         let dir = shm_dir();
         let prefix = prefix();
-        let Ok(entries) = std::fs::read_dir(&dir) else { return };
         let now = now_ns();
-        for entry in entries.flatten() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
             let path = entry.path();
             let named = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(&prefix));
-            if !named || self.sessions.contains_key(&path) || self.rejected.contains(&path) {
+            let key = Key::Page(path.clone());
+            if !named || self.sessions.contains_key(&key) || self.rejected.contains(&key) {
                 continue;
             }
             match Mapping::attach(&path) {
                 Ok(page) => {
-                    let toggles = page.toggles();
                     let id = page.steam_app_id();
                     let name = (id != 0).then(|| steam::app_name(id)).flatten().unwrap_or_else(|| page.name());
-                    self.sessions.insert(
-                        path,
-                        Session {
-                            page,
-                            name,
-                            read_to: 0,
-                            samples: VecDeque::new(),
-                            pacer: Pacer::default(),
-                            stats: Stats::default(),
-                            display: String::new(),
-                            placement: Placement::Fastest,
-                            output: None,
-                            placed: None,
-                            toggles,
-                        },
-                    );
+                    self.sessions.insert(key, Session::new(Feed::Page(page), name));
                 }
                 Err(_) => {
-                    self.rejected.insert(path);
+                    self.rejected.insert(key);
                 }
             }
         }
-        self.sessions.retain(|path, s| {
-            let exists = path.exists();
-            let gone = now.saturating_sub(s.page.heartbeat_ns()) > SWEEP_NS
-                && !PathBuf::from(format!("/proc/{}", s.page.pid())).exists();
-            if exists && gone {
-                s.page.unlink();
+        #[cfg(windows)]
+        self.scan_presenters();
+        #[cfg(windows)]
+        let presentmon = self.presentmon.clone();
+        self.sessions.retain(|key, s| {
+            let (beat, exists) = match (&s.feed, key) {
+                (Feed::Page(page), Key::Page(path)) => (page.heartbeat_ns(), path.exists()),
+                #[cfg(windows)]
+                (Feed::Measured { pid, .. }, _) => (presentmon.heartbeat_ns(*pid), true),
+                #[cfg(windows)]
+                _ => (0, false),
+            };
+            let gone = now.saturating_sub(beat) > SWEEP_NS && !process::alive(s.feed.pid());
+            if gone {
+                match &s.feed {
+                    Feed::Page(page) if exists => page.unlink(),
+                    Feed::Page(_) => {}
+                    #[cfg(windows)]
+                    Feed::Measured { pid, .. } => presentmon.forget(*pid),
+                }
             }
             exists && !gone
         });
+    }
+
+    /// Games PresentMon sees that the layer does not pace: Direct3D and OpenGL games, Vulkan games
+    /// without the layer, and every game under a kernel anti-cheat. A game is a process installed
+    /// where stores put games, or one whose own window is in the foreground and fills its monitor.
+    #[cfg(windows)]
+    fn scan_presenters(&mut self) {
+        use formalpacer_hook::library;
+        let paced: HashSet<u32> = self.sessions.values().map(|s| s.feed.pid()).collect();
+        let foreground = crate::window::foreground_pid();
+        let presenters = self.presentmon.presenters();
+        self.exes.retain(|pid, _| presenters.iter().any(|p| p.pid == *pid));
+        for presenter in presenters {
+            let pid = presenter.pid;
+            if paced.contains(&pid) || pid == std::process::id() {
+                continue;
+            }
+            let Some(exe) = self.exes.entry(pid).or_insert_with(|| process::exe_path(pid)).clone() else { continue };
+            let installed = library::is_game(&exe);
+            let fullscreen = pid == foreground && !library::not_a_game(&exe) && crate::window::fills_monitor(pid);
+            if !installed && !fullscreen {
+                continue;
+            }
+            let protected = library::anticheat(&exe).is_some();
+            let driver = driver::Cap::new(&presenter.name, protected);
+            let name = steam::app_name_for(&exe).unwrap_or(presenter.name);
+            let feed = Feed::Measured { pid, driver, foreground: pid == foreground };
+            self.sessions.insert(Key::Process(pid), Session::new(feed, name));
+        }
+    }
+}
+
+impl Session {
+    fn new(feed: Feed, name: String) -> Self {
+        let toggles = feed.toggles();
+        Self {
+            feed,
+            name,
+            read_to: 0,
+            samples: VecDeque::new(),
+            pacer: Pacer::default(),
+            stats: Stats::default(),
+            display: String::new(),
+            placement: Placement::Fastest,
+            output: None,
+            placed: None,
+            toggles,
+        }
     }
 }
 

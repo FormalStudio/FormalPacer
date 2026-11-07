@@ -109,7 +109,7 @@ pub fn before_present(game: &Game) {
                 }
                 state.page = Some(page);
                 // SAFETY: registers a plain extern "C" function.
-                unsafe { libc::atexit(unlink_at_exit) };
+                unsafe { atexit(unlink_at_exit) };
             }
             Err(_) => state.page_failed = true,
         }
@@ -156,17 +156,68 @@ pub fn before_present(game: &Game) {
 
 fn sleep_until(deadline: u64) {
     if deadline > now_ns() + SPIN_NS {
-        let wake = deadline - SPIN_NS;
-        let ts = libc::timespec {
-            tv_sec: (wake / 1_000_000_000) as libc::time_t,
-            tv_nsec: (wake % 1_000_000_000) as libc::c_long,
-        };
-        // SAFETY: absolute sleep on the monotonic clock; an early EINTR return is covered by the spin.
-        unsafe { libc::clock_nanosleep(libc::CLOCK_MONOTONIC, libc::TIMER_ABSTIME, &ts, std::ptr::null_mut()) };
+        sleep_to(deadline - SPIN_NS);
     }
     while now_ns() < deadline {
         std::hint::spin_loop();
     }
+}
+
+#[cfg(target_os = "linux")]
+fn sleep_to(wake: u64) {
+    let ts = libc::timespec {
+        tv_sec: (wake / 1_000_000_000) as libc::time_t,
+        tv_nsec: (wake % 1_000_000_000) as libc::c_long,
+    };
+    // SAFETY: absolute sleep on the monotonic clock; an early EINTR return is covered by the spin.
+    unsafe { libc::clock_nanosleep(libc::CLOCK_MONOTONIC, libc::TIMER_ABSTIME, &ts, std::ptr::null_mut()) };
+}
+
+/// A high resolution waitable timer per thread: `Sleep` rounds up to the 1 to 15.6 ms scheduler
+/// tick, far too coarse to hold a frame interval.
+#[cfg(windows)]
+fn sleep_to(wake: u64) {
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::Threading::{
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE, SetWaitableTimer, TIMER_ALL_ACCESS,
+        WaitForSingleObject,
+    };
+    thread_local! {
+        static TIMER: HANDLE = {
+            // SAFETY: creates an unnamed timer owned by this thread for its lifetime.
+            unsafe {
+                CreateWaitableTimerExW(
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                    TIMER_ALL_ACCESS,
+                )
+            }
+        };
+    }
+    let wait = wake.saturating_sub(now_ns());
+    TIMER.with(|&timer| {
+        if timer.is_null() {
+            return;
+        }
+        // Negative due times are relative, in 100 ns units.
+        let due = -((wait / 100) as i64);
+        // SAFETY: a live timer handle and a due time; the wait returns when it fires.
+        unsafe {
+            if SetWaitableTimer(timer, &due, 0, None, std::ptr::null(), 0) != 0 {
+                WaitForSingleObject(timer, INFINITE);
+            }
+        }
+    });
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn sleep_to(wake: u64) {
+    std::thread::sleep(std::time::Duration::from_nanos(wake.saturating_sub(now_ns())));
+}
+
+unsafe extern "C" {
+    fn atexit(f: extern "C" fn()) -> std::ffi::c_int;
 }
 
 extern "C" fn unlink_at_exit() {

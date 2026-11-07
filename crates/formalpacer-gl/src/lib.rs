@@ -7,6 +7,9 @@
 //! directly (our exports come first), `glXGetProcAddress`/`eglGetProcAddress`, and
 //! `dlsym(dlopen("libGL.so.1"), ...)`, which SDL and most engines use.
 
+// Windows games are measured from outside instead; see the engine's `presentmon`.
+#![cfg(unix)]
+
 /// Looks up `$name` with `$lookup` as a `$ty`, returning `None` from the caller if it is missing.
 macro_rules! load {
     ($lookup:expr, $name:literal, $ty:ty) => {{

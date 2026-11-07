@@ -4,5 +4,6 @@
 
 pub mod game;
 mod hotkey;
+pub mod library;
 pub mod overlay;
 pub mod pacer;

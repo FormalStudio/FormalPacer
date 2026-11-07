@@ -2,7 +2,7 @@
 
 # FormalPacer
 
-Console-style frame pacing for Linux games. FormalPacer watches the game you are playing, works
+Console-style frame pacing for Linux and Windows games. FormalPacer watches the game you are playing, works
 out what frame rate it can actually hold on the display it is on, and caps it there, so frames
 arrive at an even rhythm instead of whenever they are ready. Rust on
 [NativeDesktop](https://github.com/FormalStudio/NativeDesktop) (GPUI on Linux), with a tray item,
@@ -78,6 +78,43 @@ Proton and other XWayland games). The tray item and the window toggle it too, an
 `formalpacer --toggle-overlay` does it from a compositor key binding, which also covers
 Wayland-native games. The setting is shared by every game.
 
+## Windows
+
+On Windows a game is paced one of two ways, and nothing of FormalPacer's goes inside a game that
+runs under a kernel anti-cheat.
+
+- Vulkan games get the same layer as on Linux, registered for the user under
+  `HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers`, with live pacing and the overlay. The layer
+  passes every call straight through in a game protected by Easy Anti-Cheat, BattlEye, Vanguard,
+  Ricochet or VAC: it finds the anti-cheat's files next to the game (`EasyAntiCheat`, `BattlEye`,
+  `*_EAC_EOS.exe`, `*_BE.exe`) or knows the game by name.
+- Every other game, Direct3D and OpenGL ones and anti-cheat games like Fortnite, is measured
+  from outside through Event Tracing for Windows with Intel's
+  [PresentMon](https://github.com/GameTechDev/PresentMon), and its cap goes to the NVIDIA
+  driver's frame rate limiter in the game's driver profile (Max Frame Rate in the NVIDIA app).
+  Nothing is loaded into the game. The driver reads the profile when a game starts, so a cap
+  planned during one run holds from the next launch, and the window says what the driver holds
+  for the run now going. Only a game that has been in the foreground gets a driver cap, and
+  switching pacing off puts back the limit each game had before.
+
+RTSS and Special K hook the game's present call instead. Anti-cheats let RTSS do that because its
+DLLs are signed and on their allow lists; an unsigned DLL in Fortnite is exactly what Easy
+Anti-Cheat looks for, and Valve banned CS2 players in 2023 for AMD's Anti-Lag+, which hooked the
+game's DLLs. Event tracing and the driver's own limiter touch no game process.
+
+A game is anything presenting from where the stores install games (Steam, Epic, GOG, Xbox, Riot,
+EA, Ubisoft, Battle.net), apart from their launchers and tools such as Wallpaper Engine, or
+anything whose own window is in the foreground and covers its monitor. Steam and Epic games show
+their store name. Displays come from the Windows display configuration (exact refresh rate, the
+EDID's VRR range) and G-SYNC state from the NVIDIA driver.
+
+Reading frame times needs an administrator or a member of Performance Log Users. FormalPacer runs
+as the user, so the window offers to add you to the group: one consent prompt, then sign out and
+back in.
+
+Not done yet on Windows: games measured from outside have no in-game overlay, and AMD and Intel
+drivers have no limiter FormalPacer can set, so there those games are measured only.
+
 ## Features
 
 - Picks up games by itself: anything Steam or Proton starts, Wine and Lutris games, and any
@@ -116,19 +153,36 @@ running when the layer went in need a restart. If the layer is not registered, t
 to register the one installed next to the app. `just uninstall` removes everything `install` put
 down.
 
+On Windows, with Rust 1.95 and the Visual Studio build tools:
+
+```powershell
+git clone https://github.com/FormalStudio/FormalPacer
+cd FormalPacer
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
+```
+
+It builds the app and the layer, downloads PresentMon (pinned, hash checked), installs them in
+`%LOCALAPPDATA%\Programs\FormalPacer`, registers the layer and starts FormalPacer at sign-in.
+`nd package windows` builds a `Setup.exe` with the same files once the script has fetched
+PresentMon.
+
 To force the layer on for a game it does not recognise, set `FORMALPACER=1` in its launch options
 (`FORMALPACER=1 %command%` in Steam). `FORMALPACER=0` leaves one game alone, and
 `DISABLE_FORMALPACER=1` keeps the layer out of a process entirely.
 
 ## Configuration
 
-The window writes `~/.config/formalpacer/config.toml`:
+The window writes `~/.config/formalpacer/config.toml` (`%APPDATA%\FormalPacer\config.toml` on
+Windows):
 
 ```toml
 mode = "auto"        # "off" measures without capping
-display = "DP-1"     # leave out to follow the game
+display = "DP-1"     # leave out to follow the game (DISPLAY1 on Windows)
 overlay = true
 ```
+
+On Windows it also keeps `[driver_caps]`: the games whose NVIDIA driver limit FormalPacer has set,
+each with the limit it had before.
 
 ## Development
 
@@ -139,7 +193,7 @@ crates/formalpacer-layer    the Vulkan layer (cdylib): pacing and the overlay by
 crates/formalpacer-gl       the OpenGL hook (cdylib, LD_PRELOAD): pacing and the overlay by clears
 crates/formalpacer-engine   displays, placement, the planner, the engine thread
 src/                        the nd app: window, tray item, single instance
-tools/fakegame              a Vulkan test game with a set frame rate
+tools/fakegame              a Vulkan test game with a set frame rate (--background: unfocused, in a corner)
 ```
 
 ```sh

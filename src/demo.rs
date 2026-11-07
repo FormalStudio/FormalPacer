@@ -4,7 +4,7 @@
 
 use formalpacer_engine::config::Config;
 use formalpacer_engine::display::{Display, Vrr};
-use formalpacer_engine::engine::{Game, Placement, Snapshot};
+use formalpacer_engine::engine::{Game, Limiter, Placement, Snapshot};
 use formalpacer_engine::layer::LayerState;
 use formalpacer_engine::pacing::{Cap, CapKind, Stats};
 
@@ -17,6 +17,7 @@ pub fn snapshot() -> Snapshot {
     Snapshot {
         config: Config::default(),
         layer: LayerState::Installed("/usr/lib/formalpacer/libformalpacer_layer.so".into()),
+        outside: None,
         displays: vec![
             Display {
                 connector: "DP-1".into(),
@@ -46,6 +47,7 @@ pub fn snapshot() -> Snapshot {
             cap: Some(Cap { fps: 143.973 / 3., kind: CapKind::Fraction(3) }),
             display: "DP-1".into(),
             placement: Placement::Window,
+            limiter: Limiter::Layer,
         }),
         notice: None,
     }

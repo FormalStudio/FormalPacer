@@ -10,6 +10,14 @@ cap and writes it back. `src/` is the nd app: one process with the engine, the t
 window that can close without stopping pacing (`set_quit_when_windows_close(false)`, single
 instance through `nd-ipc`). nd is on `branch = "main"`, pinned by `Cargo.lock`, as in trove.
 
+On Windows the same layer is registered in `HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers` and the
+page is a mapped file in `%TEMP%\FormalPacer`. Games without the layer, and every game under a
+kernel anti-cheat (`formalpacer-hook/src/library.rs`), are measured from outside by PresentMon
+(`engine/src/presentmon.rs`, a hidden child process) and capped through the NVIDIA driver profile
+(`nvidia.rs`, `driver.rs`), which applies from the game's next launch. Never add anything that
+loads into an anti-cheat game. Build there with `RUSTUP_TOOLCHAIN=1.95.0-x86_64-pc-windows-msvc`
+(the host default is the GNU toolchain).
+
 The planner's rules and the display order are in the README and in the module docs of
 `pacing.rs` and `placement.rs`; change them there together. `just pacing-check` runs
 `tools/fakegame` under the headless engine with the checkout's layer and is the end-to-end check

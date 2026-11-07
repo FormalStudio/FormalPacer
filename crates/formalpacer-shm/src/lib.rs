@@ -1,15 +1,18 @@
-//! One page per presenting game process, in `/dev/shm`. The Vulkan layer creates it on the
-//! game's first present and writes frame samples; the app reads the samples and writes back the
-//! frame interval to hold. `/dev/shm` is used rather than `$XDG_RUNTIME_DIR` because Steam's
-//! pressure-vessel container shares `/dev` with the host but not all of the runtime dir.
+//! One page per presenting game process, a file mapped by the game and the app. The Vulkan layer
+//! creates it on the game's first present and writes frame samples; the app reads the samples and
+//! writes back the frame interval to hold. On Linux the file is in `/dev/shm` rather than
+//! `$XDG_RUNTIME_DIR` because Steam's pressure-vessel container shares `/dev` with the host but
+//! not all of the runtime dir. On Windows it is in the user's temp directory.
 //!
 //! Every field is an atomic, so either side can die at any point without leaving the other
-//! with a torn value. Times are `CLOCK_MONOTONIC` nanoseconds, which is one clock for every
-//! process on the machine whatever namespace it runs in.
+//! with a torn value. Times are nanoseconds of one machine-wide clock: `CLOCK_MONOTONIC`, which
+//! holds whatever namespace a process runs in, or the performance counter on Windows.
 
-use std::ffi::CString;
+#[cfg_attr(unix, path = "unix.rs")]
+#[cfg_attr(windows, path = "windows.rs")]
+mod sys;
+
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -110,21 +113,15 @@ impl Sample {
     }
 }
 
-pub fn now_ns() -> u64 {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-    // SAFETY: clock_gettime writes the timespec it is given.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
-}
+pub use sys::now_ns;
 
 pub fn shm_dir() -> PathBuf {
-    std::env::var_os("FORMALPACER_SHM_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/dev/shm"))
+    std::env::var_os("FORMALPACER_SHM_DIR").map(PathBuf::from).unwrap_or_else(sys::default_dir)
 }
 
 /// File name prefix for this user's pages.
 pub fn prefix() -> String {
-    // SAFETY: getuid cannot fail.
-    format!("formalpacer-{}-", unsafe { libc::getuid() })
+    sys::prefix()
 }
 
 /// A mapped page. Unmapped on drop; the file stays until [`Mapping::unlink`] or the app's sweep.
@@ -170,40 +167,8 @@ impl Mapping {
     }
 
     fn open(path: &Path, create: bool) -> io::Result<Self> {
-        let c_path = CString::new(path.as_os_str().as_bytes())?;
-        let flags =
-            libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOFOLLOW | if create { libc::O_CREAT | libc::O_EXCL } else { 0 };
-        // SAFETY: plain syscalls on a path we own; every result is checked.
-        unsafe {
-            let fd = libc::open(c_path.as_ptr(), flags, 0o600);
-            if fd < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let size = size_of::<Page>();
-            if create && libc::ftruncate(fd, size as libc::off_t) != 0 {
-                let err = io::Error::last_os_error();
-                libc::close(fd);
-                return Err(err);
-            }
-            let mut st: libc::stat = std::mem::zeroed();
-            // /dev/shm is shared by every user: only a regular file of ours that nobody else can
-            // write is a page.
-            let stat_ok = libc::fstat(fd, &mut st) == 0;
-            let ours =
-                st.st_mode & libc::S_IFMT == libc::S_IFREG && st.st_uid == libc::getuid() && st.st_mode & 0o077 == 0;
-            if !stat_ok || !ours || (st.st_size as usize) < size {
-                libc::close(fd);
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "not a page of this user's"));
-            }
-            let ptr =
-                libc::mmap(std::ptr::null_mut(), size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd, 0);
-            libc::close(fd);
-            if ptr == libc::MAP_FAILED {
-                return Err(io::Error::last_os_error());
-            }
-            let page = NonNull::new(ptr.cast::<Page>()).ok_or_else(io::Error::last_os_error)?;
-            Ok(Self { page, path: path.to_path_buf() })
-        }
+        let page = sys::map(path, create, size_of::<Page>())?;
+        Ok(Self { page: page.cast(), path: path.to_path_buf() })
     }
 
     fn page(&self) -> &Page {
@@ -314,8 +279,7 @@ impl Mapping {
 
 impl Drop for Mapping {
     fn drop(&mut self) {
-        // SAFETY: unmaps exactly what `open` mapped.
-        unsafe { libc::munmap(self.page.as_ptr().cast(), size_of::<Page>()) };
+        sys::unmap(self.page.cast(), size_of::<Page>());
     }
 }
 
@@ -354,7 +318,15 @@ mod tests {
         assert_eq!(layer.target(200, 1_000), 6_944_444);
         assert_eq!(layer.target(5_000, 1_000), 0);
         layer.unlink();
+        refuses_pages_of_others(&dir);
+        std::fs::remove_dir(&dir).unwrap();
+    }
 
+    #[cfg(windows)]
+    fn refuses_pages_of_others(_dir: &Path) {}
+
+    #[cfg(unix)]
+    fn refuses_pages_of_others(dir: &Path) {
         // A page anyone else can write, or a link to one, is refused.
         let open = dir.join(format!("{}open", prefix()));
         let linked = dir.join(format!("{}linked", prefix()));
@@ -367,6 +339,5 @@ mod tests {
         assert!(Mapping::attach(&open).is_err());
         std::fs::remove_file(&open).unwrap();
         std::fs::remove_file(&linked).unwrap();
-        std::fs::remove_dir(&dir).unwrap();
     }
 }

@@ -1,25 +1,54 @@
-//! Whether the Vulkan layer is registered, and registering it for this user.
+//! Whether the Vulkan layer is registered, and registering it for this user. On Linux the loader
+//! finds manifests in `implicit_layer.d` directories; on Windows through registry values naming
+//! them under `HKCU` or `HKLM\SOFTWARE\Khronos\Vulkan\ImplicitLayers`.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 pub const LAYER_NAME: &str = "VK_LAYER_FORMALSTUDIO_formalpacer";
+#[cfg(not(windows))]
 const LIBRARY: &str = "libformalpacer_layer.so";
+#[cfg(windows)]
+const LIBRARY: &str = "formalpacer_layer.dll";
 const MANIFEST: &str = "formalpacer.json";
 /// The 32-bit build, for 32-bit games, in an `i686` directory beside the 64-bit one. The loader
 /// skips a manifest whose `library_arch` does not match the game.
+#[cfg(not(windows))]
 const MANIFEST_32: &str = "formalpacer-32.json";
 
+#[cfg(not(windows))]
 fn data_home() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
 }
 
+#[cfg(not(windows))]
 fn user_manifest(name: &str) -> Option<PathBuf> {
     data_home().map(|d| d.join("vulkan/implicit_layer.d").join(name))
 }
 
+#[cfg(windows)]
+fn user_manifest(name: &str) -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("FormalPacer").join(name))
+}
+
+/// Every manifest the loader would read.
+#[cfg(not(windows))]
+fn manifests() -> Vec<PathBuf> {
+    manifest_dirs()
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.flatten().map(|e| e.path()).collect::<Vec<_>>())
+        .collect()
+}
+
+#[cfg(windows)]
+fn manifests() -> Vec<PathBuf> {
+    crate::registry::implicit_layers()
+}
+
+#[cfg(not(windows))]
 fn manifest_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = ["VK_IMPLICIT_LAYER_PATH", "VK_ADD_IMPLICIT_LAYER_PATH"]
         .iter()
@@ -45,21 +74,19 @@ pub enum LayerState {
 }
 
 pub fn state() -> LayerState {
-    for dir in manifest_dirs() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for entry in entries.flatten() {
-            let Ok(json) = std::fs::read_to_string(entry.path()) else { continue };
-            if !json.contains(&format!("\"{LAYER_NAME}\"")) {
-                continue;
-            }
-            let library = json
-                .lines()
-                .find_map(|l| l.trim().strip_prefix("\"library_path\":"))
-                .map(|v| v.trim().trim_end_matches(',').trim_matches('"').to_owned())
-                .unwrap_or_default();
-            let path = if Path::new(&library).is_absolute() { PathBuf::from(&library) } else { dir.join(&library) };
-            return if path.is_file() { LayerState::Installed(path) } else { LayerState::Broken(path) };
+    for manifest in manifests() {
+        let Ok(json) = std::fs::read_to_string(&manifest) else { continue };
+        if !json.contains(&format!("\"{LAYER_NAME}\"")) {
+            continue;
         }
+        let library = json
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("\"library_path\":"))
+            .map(|v| v.trim().trim_end_matches(',').trim_matches('"').replace("\\\\", "\\"))
+            .unwrap_or_default();
+        let dir = manifest.parent().unwrap_or(Path::new(""));
+        let path = if Path::new(&library).is_absolute() { PathBuf::from(&library) } else { dir.join(&library) };
+        return if path.is_file() { LayerState::Installed(path) } else { LayerState::Broken(path) };
     }
     LayerState::Missing
 }
@@ -79,11 +106,12 @@ pub fn manifest_json(library: &Path, bits: u32) -> String {
     let name = if bits == 32 { format!("{LAYER_NAME}_32") } else { LAYER_NAME.to_owned() };
     include_str!("../../../packaging/linux/formalpacer-layer.json.in")
         .replace("@LAYER_NAME@", &name)
-        .replace("@LIBRARY_PATH@", &library.display().to_string())
+        .replace("@LIBRARY_PATH@", &library.display().to_string().replace('\\', "\\\\"))
         .replace("@LIBRARY_ARCH@", &bits.to_string())
 }
 
 /// Writes the user-level manifests pointing at the bundled libraries.
+#[cfg(not(windows))]
 pub fn install() -> io::Result<PathBuf> {
     let library = bundled_library()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{LIBRARY} is not next to this binary")))?;
@@ -100,5 +128,22 @@ pub fn install() -> io::Result<PathBuf> {
             std::fs::write(manifest_32, manifest_json(&library_32, 32))?;
         }
     }
+    Ok(manifest)
+}
+
+/// Writes the manifest beside the user's other FormalPacer data and registers it for this user.
+/// 32-bit Vulkan games are rare enough on Windows that only the 64-bit layer is registered.
+#[cfg(windows)]
+pub fn install() -> io::Result<PathBuf> {
+    let library = bundled_library()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{LIBRARY} is not next to this binary")))?;
+    let manifest = user_manifest(MANIFEST).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no LOCALAPPDATA"))?;
+    if let Some(parent) = manifest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // The window shows this path: drop the verbatim prefix canonicalize adds.
+    let library = PathBuf::from(library.display().to_string().trim_start_matches("\\\\?\\"));
+    std::fs::write(&manifest, manifest_json(&library, 64))?;
+    crate::registry::register_implicit_layer(&manifest)?;
     Ok(manifest)
 }

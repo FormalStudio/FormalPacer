@@ -21,6 +21,7 @@ struct Args {
     spike_ms: f64,
     seconds: Option<f64>,
     fullscreen: bool,
+    background: bool,
 }
 
 fn parse_args() -> Result<Args> {
@@ -32,6 +33,7 @@ fn parse_args() -> Result<Args> {
         spike_ms: 0.0,
         seconds: None,
         fullscreen: false,
+        background: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -51,9 +53,10 @@ fn parse_args() -> Result<Args> {
             "--spike-ms" => a.spike_ms = val()?.parse()?,
             "--seconds" => a.seconds = Some(val()?.parse()?),
             "--fullscreen" => a.fullscreen = true,
+            "--background" => a.background = true,
             other => bail!(
                 "unknown argument {other}\nusage: fakegame [--present immediate|mailbox|fifo] \
-                 [--fps N] [--jitter P] [--spike-every K --spike-ms M] [--seconds S] [--fullscreen]"
+                 [--fps N] [--jitter P] [--spike-every K --spike-ms M] [--seconds S] [--fullscreen] [--background]"
             ),
         }
     }
@@ -174,13 +177,20 @@ impl ApplicationHandler for App {
             return;
         }
         let result = (|| {
-            let window = event_loop
-                .create_window(
-                    Window::default_attributes()
-                        .with_title("fakegame")
-                        .with_fullscreen(self.args.fullscreen.then_some(winit::window::Fullscreen::Borderless(None))),
-                )
-                .context("create window")?;
+            let mut attributes = Window::default_attributes()
+                .with_title("fakegame")
+                .with_fullscreen(self.args.fullscreen.then_some(winit::window::Fullscreen::Borderless(None)));
+            if self.args.background {
+                // Never focused, and all but a few pixels past the primary monitor's bottom-right
+                // corner, for runs on a machine someone is using. Fully off the desktop, the
+                // window is never composed, and frame tracing sees no presents.
+                let (w, h) = event_loop.primary_monitor().map_or((1920, 1080), |m| (m.size().width, m.size().height));
+                attributes = attributes
+                    .with_active(false)
+                    .with_decorations(false)
+                    .with_position(winit::dpi::PhysicalPosition::new(w.saturating_sub(4), h.saturating_sub(4)));
+            }
+            let window = event_loop.create_window(attributes).context("create window")?;
             let size = window.inner_size();
             let gfx = Gfx::new(&window, self.args.present, size.width, size.height)?;
             Ok::<_, anyhow::Error>((window, gfx))

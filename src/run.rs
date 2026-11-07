@@ -3,12 +3,22 @@
 //! `LD_PRELOAD`, and the dynamic linker skips the one of the wrong class with a warning, the
 //! way Steam loads its overlay.
 
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(unix)]
 use std::path::PathBuf;
 
+#[cfg(unix)]
 const LIBRARY: &str = "libformalpacer_gl.so";
 
+/// Windows games are found from outside, OpenGL ones included, so there is nothing to wrap.
+#[cfg(windows)]
+pub fn exec(_command: &[String]) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Unsupported, "not needed on Windows: start the game as usual")
+}
+
 /// The hooks shipped with this binary: installed in `../lib/formalpacer`, or a build tree.
+#[cfg(unix)]
 fn hooks() -> Vec<PathBuf> {
     let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)) else {
         return Vec::new();
@@ -26,6 +36,7 @@ fn hooks() -> Vec<PathBuf> {
 }
 
 /// Replaces this process with `command`; only returns on failure.
+#[cfg(unix)]
 pub fn exec(command: &[String]) -> std::io::Error {
     let Some((program, args)) = command.split_first() else {
         return std::io::Error::new(std::io::ErrorKind::InvalidInput, "usage: formalpacer run <command> [args]");

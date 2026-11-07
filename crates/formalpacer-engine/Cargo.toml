@@ -7,14 +7,30 @@ rust-version.workspace = true
 description = "Finds the running game and the display it is on, and decides the frame rate to hold."
 
 [dependencies]
-drm = "0.14"
 flume.workspace = true
 formalpacer-shm.workspace = true
-libc.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
+
+[target.'cfg(unix)'.dependencies]
+drm = "0.14"
 x11rb = { version = "0.13", features = ["randr"] }
+
+[target.'cfg(windows)'.dependencies]
+formalpacer-hook.workspace = true
+windows-sys = { workspace = true, features = [
+    "Win32_Devices_Display",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [lints]
 workspace = true

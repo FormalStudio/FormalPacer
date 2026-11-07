@@ -1,3 +1,7 @@
+// A release build is a tray app: no console window. `--headless` still writes to a redirected
+// stderr.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 fn main() -> nd::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "run") {

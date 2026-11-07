@@ -1,20 +1,30 @@
-//! Which display a game's window is on, asked of whoever knows: the compositor for the game's
-//! process (Hyprland, Sway, niri), or for an X11 or XWayland window the X server's RandR
+//! Which display a game's window is on, asked of whoever knows. On Linux: the compositor for the
+//! game's process (Hyprland, Sway, niri), or for an X11 or XWayland window the X server's RandR
 //! monitors, using the window the layer saw the game create its swapchain surface for. Every
-//! answer is a connector name (`DP-3`), the same name the kernel uses.
+//! answer is a connector name (`DP-3`), the same name the kernel uses. On Windows: the monitor
+//! holding the game's window, by its GDI name (`DISPLAY1`).
 
+#[cfg(unix)]
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::Duration;
 
 use serde_json::Value;
+#[cfg(unix)]
 use x11rb::connection::Connection;
+#[cfg(unix)]
 use x11rb::protocol::randr::ConnectionExt as _;
+#[cfg(unix)]
 use x11rb::protocol::xproto::ConnectionExt as _;
 
+#[cfg(unix)]
 const TIMEOUT: Duration = Duration::from_millis(200);
 
+#[cfg(unix)]
 pub fn game_output(pid: u32, x11_window: u32) -> Option<String> {
     hyprland(pid)
         .or_else(|| sway(pid))
@@ -22,10 +32,15 @@ pub fn game_output(pid: u32, x11_window: u32) -> Option<String> {
         .or_else(|| (x11_window != 0).then(|| x11(x11_window)).flatten())
 }
 
+#[cfg(windows)]
+pub use crate::window::game_output;
+
+#[cfg(unix)]
 fn runtime_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
 }
 
+#[cfg(unix)]
 fn request(path: &PathBuf, payload: &[u8]) -> Option<Vec<u8>> {
     let mut stream = UnixStream::connect(path).ok()?;
     stream.set_read_timeout(Some(TIMEOUT)).ok()?;
@@ -38,6 +53,7 @@ fn request(path: &PathBuf, payload: &[u8]) -> Option<Vec<u8>> {
 
 /// The instance this app runs under, or the only one running when the app was started from
 /// somewhere that did not pass the variable on.
+#[cfg(unix)]
 fn hyprland_socket() -> Option<PathBuf> {
     let dir = runtime_dir()?.join("hypr");
     let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok().or_else(|| {
@@ -48,6 +64,7 @@ fn hyprland_socket() -> Option<PathBuf> {
     Some(dir.join(sig).join(".socket.sock"))
 }
 
+#[cfg(unix)]
 fn hyprland(pid: u32) -> Option<String> {
     let socket = hyprland_socket()?;
     let clients: Value = serde_json::from_slice(&request(&socket, b"j/clients")?).ok()?;
@@ -67,6 +84,7 @@ pub fn hyprland_pick(clients: &Value, monitors: &Value, pid: u32) -> Option<Stri
     monitors.as_array()?.iter().find(|m| m["id"].as_i64() == Some(id))?["name"].as_str().map(str::to_owned)
 }
 
+#[cfg(unix)]
 fn sway(pid: u32) -> Option<String> {
     let socket = PathBuf::from(std::env::var_os("SWAYSOCK")?);
     // i3 IPC: magic, payload length, message type 4 (GET_TREE), no payload.
@@ -101,6 +119,7 @@ pub fn sway_pick(tree: &Value, pid: u32) -> Option<String> {
         .map(str::to_owned)
 }
 
+#[cfg(unix)]
 fn niri(pid: u32) -> Option<String> {
     let socket = PathBuf::from(std::env::var_os("NIRI_SOCKET")?);
     let windows: Value = serde_json::from_slice(&request(&socket, b"\"Windows\"\n")?).ok()?;
@@ -114,6 +133,7 @@ fn niri(pid: u32) -> Option<String> {
 
 /// The RandR monitor holding the window's centre. XWayland names its monitors after the
 /// Wayland outputs, which are the connector names.
+#[cfg(unix)]
 fn x11(window: u32) -> Option<String> {
     let (conn, screen) = x11rb::connect(None).ok()?;
     let root = conn.setup().roots.get(screen)?.root;

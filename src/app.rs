@@ -1,6 +1,6 @@
 use formalpacer_engine::config::Mode;
 use formalpacer_engine::display::Vrr;
-use formalpacer_engine::engine::{Command, Game, Snapshot};
+use formalpacer_engine::engine::{Command, Game, Outside, Snapshot};
 use formalpacer_engine::layer::LayerState;
 use nd::prelude::*;
 
@@ -51,9 +51,15 @@ impl Main {
         let model = self.model.read(cx);
         let mut out = Vec::new();
         let layer = model.snapshot.as_ref().map(|s| s.layer.clone());
-        let missing = match layer {
-            Some(LayerState::Missing) => Some("Games aren't paced yet: the Vulkan layer isn't registered"),
-            Some(LayerState::Broken(_)) => Some("Games aren't paced: the registered layer's file is gone"),
+        // Where games are also measured from outside, the layer only adds in-game pacing for
+        // Vulkan games.
+        let outside = model.snapshot.as_ref().is_some_and(|s| s.outside.is_some());
+        let missing = match (layer, outside) {
+            (Some(LayerState::Missing), false) => Some("Games aren't paced yet: the Vulkan layer isn't registered"),
+            (Some(LayerState::Missing), true) => {
+                Some("Vulkan games aren't paced in game yet: the layer isn't registered")
+            }
+            (Some(LayerState::Broken(_)), _) => Some("Games aren't paced: the registered layer's file is gone"),
             _ => None,
         };
         if let Some(title) = missing {
@@ -66,6 +72,18 @@ impl Main {
                     }))
                     .into_any_element(),
             );
+        }
+        if let Some(snapshot) = &model.snapshot
+            && let Some(title) = words::outside(snapshot)
+        {
+            let denied = snapshot.outside == Some(Outside::Denied);
+            let mut item = banner("outside", title).revealed(true);
+            if denied {
+                item = item.action("Join Group").on_action(cx.listener(|this, _: &BannerActionClicked, _, cx| {
+                    this.send(Command::JoinPerformanceLogUsers, cx);
+                }));
+            }
+            out.push(item.into_any_element());
         }
         if let Some(notice) = model.notice.clone() {
             out.push(
@@ -101,7 +119,10 @@ impl Main {
                     .child(
                         text(game.name.clone()).text_size(theme.type_scale.headline).text_color(theme.text.secondary),
                     )
-                    .child(text(words::cap(snapshot, game)).text_size(theme.type_scale.large_title)),
+                    .child(text(words::cap(snapshot, game)).text_size(theme.type_scale.large_title))
+                    .children(words::limiter(game).map(|l| {
+                        text(l).id("limiter").text_size(theme.type_scale.footnote).text_color(theme.text.secondary)
+                    })),
             )
             .child(
                 h_flex()
@@ -191,7 +212,11 @@ impl Render for Main {
                     None => status_page("No game running")
                         .id("no-game")
                         .icon(Icon::Play)
-                        .description("Start a Vulkan or Proton game and FormalPacer picks it up on its first frame.")
+                        .description(if snapshot.outside.is_some() {
+                            "Start a game and FormalPacer picks it up on its first frame."
+                        } else {
+                            "Start a Vulkan or Proton game and FormalPacer picks it up on its first frame."
+                        })
                         .compact()
                         .into_any_element(),
                 };

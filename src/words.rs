@@ -1,7 +1,7 @@
 //! What the window, the tray item and `--headless` say about a snapshot.
 
 use formalpacer_engine::display::{Display, Vrr};
-use formalpacer_engine::engine::{Game, Placement, Snapshot};
+use formalpacer_engine::engine::{Game, Limiter, Outside, Placement, Snapshot};
 
 pub fn vrr(display: &Display) -> String {
     let range = display.vrr_range.map(|(lo, hi)| format!(", {lo:.0}–{hi:.0} Hz")).unwrap_or_default();
@@ -43,16 +43,60 @@ pub fn cap(snapshot: &Snapshot, game: &Game) -> String {
     }
 }
 
+/// Who holds the cap, when it is not the layer in the game from the next frame.
+pub fn limiter(game: &Game) -> Option<String> {
+    const ANTICHEAT: &str = "It runs under a kernel anti-cheat, so nothing of FormalPacer's goes inside it.";
+    match &game.limiter {
+        Limiter::Layer => None,
+        Limiter::Driver { running, protected } => {
+            let now = match running {
+                Some(fps) => format!("This run is held at {fps} fps."),
+                None => "This run has no driver limit.".into(),
+            };
+            let why = if *protected { format!("{ANTICHEAT} ") } else { String::new() };
+            Some(format!("{why}The NVIDIA driver holds the cap from the game's next launch. {now}"))
+        }
+        Limiter::None { protected: true } => {
+            Some(format!("{ANTICHEAT} Without an NVIDIA driver to hold a cap, it is measured only."))
+        }
+        Limiter::None { protected: false } => {
+            Some("Measured only: without an NVIDIA driver, only Vulkan games can be capped.".into())
+        }
+    }
+}
+
+/// Why games without the layer are not measured, if they are not.
+pub fn outside(snapshot: &Snapshot) -> Option<&'static str> {
+    match snapshot.outside.as_ref()? {
+        Outside::Denied => Some(
+            "Direct3D and anti-cheat games aren't measured: Windows only lets administrators and Performance Log Users read frame times",
+        ),
+        Outside::Missing => {
+            Some("Direct3D and anti-cheat games aren't measured: PresentMon.exe is missing next to FormalPacer")
+        }
+        Outside::Failed(_) => {
+            Some("Direct3D and anti-cheat games aren't measured: PresentMon stopped and is restarting")
+        }
+        Outside::Starting | Outside::Running => None,
+    }
+}
+
 pub fn fps(v: f64) -> String {
     if v > 0. { format!("{v:.0}") } else { "–".into() }
 }
 
 /// The game, its display and the cap, without the frame rates.
 pub fn state_line(snapshot: &Snapshot) -> String {
-    let Some(game) = &snapshot.game else { return "no game".into() };
+    let Some(game) = &snapshot.game else {
+        return match outside(snapshot) {
+            Some(why) => format!("no game ({why})"),
+            None => "no game".into(),
+        };
+    };
     let display = snapshot.display(&game.display);
+    let held = limiter(game).map(|l| format!(" ({l})")).unwrap_or_default();
     format!(
-        "{} on {} ({:.2} Hz, VRR {}, {}): cap {}",
+        "{} on {} ({:.2} Hz, VRR {}, {}): cap {}{held}",
         game.name,
         display.map(display_name).unwrap_or_else(|| "no display".into()),
         display.map_or(0., |d| d.refresh_hz),
