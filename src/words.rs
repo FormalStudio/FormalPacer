@@ -71,6 +71,9 @@ pub fn outside(snapshot: &Snapshot) -> Option<&'static str> {
         Outside::Denied => Some(
             "Anti-cheat games aren't measured: Windows only lets administrators and Performance Log Users read frame times",
         ),
+        Outside::SignIn => Some(
+            "Anti-cheat games are measured from your next sign-in: Windows adds you to Performance Log Users then",
+        ),
         Outside::Missing => {
             Some("Anti-cheat games aren't measured: PresentMon.exe is missing next to FormalPacer")
         }

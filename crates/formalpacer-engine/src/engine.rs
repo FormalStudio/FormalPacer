@@ -70,6 +70,8 @@ pub enum Outside {
     Running,
     /// Not an administrator and not in the Performance Log Users group.
     Denied,
+    /// In Performance Log Users, from the next sign-in: Windows reads groups at sign-in.
+    SignIn,
     /// `PresentMon.exe` is not next to FormalPacer.
     Missing,
     Failed(String),
@@ -171,6 +173,9 @@ struct Engine {
     /// measured from outside instead.
     #[cfg(windows)]
     injected: HashMap<u32, Instant>,
+    /// Whether the user is in Performance Log Users, checked while PresentMon is denied.
+    #[cfg(windows)]
+    joined: bool,
     notice: Option<String>,
     last: Option<Snapshot>,
 }
@@ -208,6 +213,8 @@ impl Engine {
             exes: HashMap::new(),
             #[cfg(windows)]
             injected: HashMap::new(),
+            #[cfg(windows)]
+            joined: false,
             notice: None,
             last: None,
         }
@@ -215,7 +222,10 @@ impl Engine {
 
     fn outside(&self) -> Option<Outside> {
         #[cfg(windows)]
-        return Some(self.presentmon.state());
+        return Some(match self.presentmon.state() {
+            Outside::Denied if self.joined => Outside::SignIn,
+            state => state,
+        });
         #[cfg(not(windows))]
         None
     }
@@ -285,6 +295,10 @@ impl Engine {
         if self.probed.is_none_or(|t| t.elapsed() >= PROBE_EVERY) {
             self.displays = display::probe();
             self.layer = layer::state();
+            #[cfg(windows)]
+            if self.presentmon.state() == Outside::Denied {
+                self.joined = crate::elevate::in_performance_log_users();
+            }
             self.probed = Some(Instant::now());
         }
         self.scan();

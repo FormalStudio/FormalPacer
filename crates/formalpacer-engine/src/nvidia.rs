@@ -157,7 +157,8 @@ pub fn available() -> bool {
 }
 
 pub struct VrrState {
-    /// G-SYNC is running on the display now.
+    /// G-SYNC is turned on for the display. It runs only while a game presents in a mode it
+    /// covers, so the flag for that (`bIsVRREnabled`) is off whenever the desktop is in front.
     pub enabled: bool,
     /// The display and the driver can run it.
     pub possible: bool,
@@ -176,8 +177,9 @@ pub fn vrr(gdi_name: &str) -> Option<VrrState> {
             return None;
         }
     }
-    // Bit 0 is bIsVRREnabled, bit 1 bIsVRRPossible.
-    Some(VrrState { enabled: info.flags & 1 != 0, possible: info.flags & 2 != 0 })
+    // Bit 0 is bIsVRREnabled (running now), bit 1 bIsVRRPossible, bit 4 bIsDisplayInVRRMode (turned
+    // on for the display, whatever is in front).
+    Some(VrrState { enabled: info.flags & 0x11 != 0, possible: info.flags & 2 != 0 })
 }
 
 fn wide(s: &str) -> Box<UnicodeString> {
