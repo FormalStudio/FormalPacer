@@ -23,7 +23,9 @@
 //! layer holds the present (BeamNG, most big engines) shows almost no work per frame, so it looks
 //! able to run far faster than it can. A raise that has to be taken back within ten seconds marks
 //! the game as such: from then on the cap rises one step at a time, and after a failed step it
-//! waits 30 seconds before trying again, doubling up to five minutes.
+//! waits 30 seconds before trying again, doubling up to five minutes (under a blind cap, see
+//! [`Pacer::update`], never more than 30 seconds, and not at all when the failed raise still got
+//! the game past the old cap).
 //!
 //! Under a blind cap a game that drops far under it (a loading screen, the lobby, a heavy scene)
 //! is capped under what it reaches there, and the cap it had is remembered: once the game holds
@@ -281,9 +283,15 @@ impl Pacer {
                     self.blocked_until = now_s + self.scene_wait_s;
                 } else if raised && (!blind || stats.avg_fps >= self.raised_from * BLIND_SCENE) {
                     self.stepping = true;
-                    let backoff = if self.backoff_s > 0. { self.backoff_s } else { BACKOFF_START_S };
-                    self.blocked_until = now_s + backoff;
-                    self.backoff_s = (backoff * 2.).min(BACKOFF_MAX_S);
+                    // Under a blind cap a failed raise costs a few seconds without a cap, and
+                    // what the game can do moves with the scene: the next try never waits
+                    // minutes, and none at all when the raise got the game past the old cap.
+                    let gained = blind && wanted.is_some_and(|c| c.fps > self.raised_from + 0.01);
+                    if !gained {
+                        let backoff = if self.backoff_s > 0. { self.backoff_s } else { BACKOFF_START_S };
+                        self.blocked_until = now_s + backoff;
+                        self.backoff_s = if blind { BACKOFF_START_S } else { (backoff * 2.).min(BACKOFF_MAX_S) };
+                    }
                 } else if blind && stats.avg_fps < current.fps * BLIND_SCENE {
                     // Right after a raise, the cap the game last held is the one before it.
                     let held = if raised { self.raised_from } else { current.fps };
@@ -451,15 +459,23 @@ mod tests {
         for t in [11.3, 11.55, 11.8] {
             assert_eq!(fps(pacer.update(&hitch, &p, t, true)), 110., "at {t}");
         }
-        // 110 it stays under: down under what it reaches, no new try for 30 s, then a step at a
-        // time.
+        // 110 it stays under, though past 90: down under what it reaches, and from there a step
+        // at a time, with no wait since the raise got it further.
         let short = Stats { avg_fps: 104., low_fps: 90., capacity_fps: 104., frames: 200, span_s: 2. };
         assert_eq!(fps(pacer.update(&short, &p, 12.3, true)), 110.);
         assert_eq!(fps(pacer.update(&short, &p, 13.9, true)), 95.);
         let held = Stats { avg_fps: 94.6, low_fps: 80., capacity_fps: 94.6, frames: 200, span_s: 2. };
-        assert_eq!(fps(pacer.update(&held, &p, 20., true)), 95.);
-        assert_eq!(fps(pacer.update(&held, &p, 44., true)), 95.);
-        assert_eq!(fps(pacer.update(&held, &p, 49.1, true)), 100.);
+        assert_eq!(fps(pacer.update(&held, &p, 17., true)), 95.);
+        assert_eq!(fps(pacer.update(&held, &p, 22.1, true)), 100.);
+        // 100 it does not reach at all: back to 95, and the next try waits 30 s, never longer.
+        let at_95 = Stats { avg_fps: 96., low_fps: 90., capacity_fps: 96., frames: 200, span_s: 2. };
+        pacer.update(&at_95, &p, 25.2, true);
+        assert_eq!(fps(pacer.update(&at_95, &p, 27.8, true)), 85.);
+        let at_85 = Stats { avg_fps: 84.6, low_fps: 80., capacity_fps: 84.6, frames: 200, span_s: 2. };
+        for t in [31., 50., 57.9, 62.8] {
+            assert_eq!(fps(pacer.update(&at_85, &p, t, true)), 85., "at {t}");
+        }
+        assert_eq!(fps(pacer.update(&at_85, &p, 63., true)), 90.);
     }
 
     #[test]

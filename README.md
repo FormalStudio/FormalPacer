@@ -112,7 +112,7 @@ that runs under a kernel anti-cheat.
   administrator to let you write them. RTSS's wait counts as the frame's work to PresentMon, so
   under an RTSS cap a game looks exactly as fast as the cap and only the rate it reaches counts:
   a game that holds the cap for five seconds gets one about a quarter higher (a step at a time
-  once a raise has failed, with the waits above), and one that stays under it for longer than a
+  once a raise has failed, after at most 30 seconds), and one that stays under it for longer than a
   hitch lasts is capped 8% under what it reaches, so it runs with room to spare like any other.
   A drop far under the cap (a loading screen) does not have to be climbed back out of: once the
   game holds the lower cap, the one from before the drop comes back at once.

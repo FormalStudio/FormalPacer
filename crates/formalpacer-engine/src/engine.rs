@@ -169,6 +169,8 @@ struct Session {
     toggles: u32,
     /// When the game last came to the front, while it stays there.
     front_since: Option<f64>,
+    /// Since when G-SYNC is turned on for the game's display but not running, while it is not.
+    composed_since: Option<f64>,
 }
 
 pub fn start() -> std::io::Result<Handle> {
@@ -435,8 +437,16 @@ impl Engine {
                         session.pacer = Pacer::default();
                         session.display = display.connector.clone();
                     }
+                    // G-SYNC stops for a moment whenever something draws over the game (a
+                    // notification, a popup): the plan follows it once it stays off.
+                    let running = as_running(display);
+                    if running.vrr == display.vrr {
+                        session.composed_since = None;
+                    }
+                    let composed = running.vrr != display.vrr
+                        && now_s - *session.composed_since.get_or_insert(now_s) >= pacing::SETTLE_S;
                     if settled {
-                        session.pacer.update(&session.stats, &as_running(display), now_s, blind)
+                        session.pacer.update(&session.stats, if composed { &running } else { display }, now_s, blind)
                     } else {
                         session.pacer.cap
                     }
@@ -715,6 +725,7 @@ impl Session {
             placed: None,
             toggles,
             front_since: None,
+            composed_since: None,
         }
     }
 }
@@ -756,8 +767,7 @@ pub fn pick_display<'a>(
 /// refresh rate to the lower one, and the game looks short of every cap the plan could give.
 fn as_running(display: &Display) -> Cow<'_, Display> {
     #[cfg(windows)]
-    if display.vrr_active()
-        && crate::nvidia::vrr(&format!("\\\\.\\{}", display.connector)).is_some_and(|v| !v.running)
+    if display.vrr_active() && crate::nvidia::vrr(&format!("\\\\.\\{}", display.connector)).is_some_and(|v| !v.running)
     {
         return Cow::Owned(Display { vrr: Vrr::Off, ..display.clone() });
     }
