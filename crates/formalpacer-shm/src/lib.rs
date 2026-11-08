@@ -57,7 +57,12 @@ const _: () = assert!(size_of::<Page>() == 136 + 8 * RING);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Overlay {
     pub show: bool,
+    /// Whether VRR is running on the game's display, where the driver says so; else whether it
+    /// is turned on.
     pub vrr: VrrState,
+    /// The display's refresh rate, and the bottom of its VRR window; 0 when not known.
+    pub refresh_hz: u16,
+    pub vrr_min_hz: u16,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -77,7 +82,9 @@ impl Overlay {
             VrrState::Off => 2,
             VrrState::On => 3,
         };
-        u32::from(self.show) | (vrr << 1)
+        let refresh = u32::from(self.refresh_hz.min(1023));
+        let floor = u32::from(self.vrr_min_hz.min(255));
+        u32::from(self.show) | (vrr << 1) | (refresh << 3) | (floor << 13)
     }
 
     fn unpack(v: u32) -> Self {
@@ -87,7 +94,7 @@ impl Overlay {
             3 => VrrState::On,
             _ => VrrState::Unknown,
         };
-        Self { show: v & 1 != 0, vrr }
+        Self { show: v & 1 != 0, vrr, refresh_hz: ((v >> 3) & 1023) as u16, vrr_min_hz: ((v >> 13) & 255) as u16 }
     }
 }
 
@@ -308,7 +315,7 @@ mod tests {
         assert_eq!(samples[0].work_us(), samples[0].interval_us - 1000);
         assert_eq!(app.samples_since(end - 2).0.len(), 2);
 
-        let overlay = Overlay { show: true, vrr: VrrState::On };
+        let overlay = Overlay { show: true, vrr: VrrState::On, refresh_hz: 165, vrr_min_hz: 48 };
         app.set_overlay(overlay);
         assert_eq!(layer.overlay(), overlay);
         layer.request_toggle();

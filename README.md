@@ -72,8 +72,12 @@ comes from the monitor's EDID.
 
 ![The overlay over a Proton game: 138 FPS, CAP 138, VRR ON](docs/images/overlay.png)
 
-The top-left corner of the game shows the frame rate, the cap and whether VRR is running on the
-game's display, over a graph of the newest frame times. The graph is centred on the cap's
+The top-left corner of the game shows the frame rate, the cap, and whether VRR is running on the
+game's display with the rate the display refreshes at, over a graph of the newest frame times.
+With VRR running the display refreshes once per frame, and a frame under the bottom of the VRR
+window twice or more (`VRR 115HZ`). On Windows the NVIDIA driver says whether it is running right
+now: a game Windows composes, under a window or Discord's overlay, is on fixed refresh however
+G-SYNC is set (`VRR OFF 144HZ`). The graph is centred on the cap's
 interval: a game paced evenly draws a flat line through the middle, and a frame that took a
 quarter longer or more shows red. It is drawn into the game's own frames, so it shows up in fullscreen, in
 screenshots and in recordings. Right Shift + F10 toggles it in game (through the X server, so

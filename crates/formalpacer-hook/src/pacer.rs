@@ -102,6 +102,8 @@ pub fn overlay(swap_height: u32) -> Option<Frame> {
         cap: if target > 0 { (1e9 / target as f64).round() as u32 } else { 0 },
         next: 0,
         vrr: wanted.vrr,
+        refresh_hz: u32::from(wanted.refresh_hz),
+        vrr_min_hz: u32::from(wanted.vrr_min_hz),
         frames_us: state.graph.clone(),
     };
     let scale = overlay::scale_for(swap_height);

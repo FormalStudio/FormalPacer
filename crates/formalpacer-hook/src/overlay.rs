@@ -43,17 +43,38 @@ pub struct Text {
     /// holds differs between runs.
     pub next: u32,
     pub vrr: VrrState,
+    /// The display's refresh rate and the bottom of its VRR window, 0 when not known.
+    pub refresh_hz: u32,
+    pub vrr_min_hz: u32,
     /// The newest frame intervals, oldest first, up to [`GRAPH_FRAMES`]; none, no graph.
     pub frames_us: Vec<u32>,
 }
 
 impl Text {
+    /// What the display refreshes at. With VRR running it refreshes once per frame, a frame under
+    /// the bottom of the VRR window as often as it takes to stay inside it (the driver's low
+    /// framerate compensation), and never past the refresh rate.
+    pub fn hz(&self) -> u32 {
+        match self.vrr {
+            VrrState::On if self.fps > 0 => {
+                let repeats = self.vrr_min_hz.div_ceil(self.fps).max(1);
+                let hz = self.fps * repeats;
+                if self.refresh_hz > 0 { hz.min(self.refresh_hz) } else { hz }
+            }
+            _ => self.refresh_hz,
+        }
+    }
+
     pub fn lines(&self) -> Vec<String> {
-        let vrr = match self.vrr {
-            VrrState::On => "VRR ON",
-            VrrState::Off => "VRR OFF",
-            VrrState::Unsupported => "NO VRR",
-            VrrState::Unknown => "",
+        let hz = self.hz();
+        let vrr = match (self.vrr, hz) {
+            (VrrState::Unknown, _) => String::new(),
+            (VrrState::On, 0) => "VRR ON".to_owned(),
+            (VrrState::Off, 0) => "VRR OFF".to_owned(),
+            (VrrState::Unsupported, 0) => "NO VRR".to_owned(),
+            (VrrState::On, hz) => format!("VRR {hz}HZ"),
+            (VrrState::Off, hz) => format!("VRR OFF {hz}HZ"),
+            (VrrState::Unsupported, hz) => format!("{hz}HZ"),
         };
         let cap = if self.cap > 0 { format!("CAP {}", self.cap) } else { "UNCAPPED".to_owned() };
         let second = if vrr.is_empty() { cap } else { format!("{cap}  {vrr}") };
@@ -203,6 +224,7 @@ fn glyph(ch: char) -> [u8; GLYPH_H] {
         'S' => [0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E],
         'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
         'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],
+        'Z' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F],
         _ => [0; GLYPH_H],
     }
 }
@@ -214,8 +236,9 @@ mod tests {
     #[test]
     fn every_character_the_overlay_can_say_has_a_glyph() {
         for vrr in [VrrState::On, VrrState::Off, VrrState::Unsupported, VrrState::Unknown] {
-            for cap in [0, 48] {
-                let text = Text { fps: 1234567890, cap, next: 1234, vrr, frames_us: Vec::new() };
+            for (cap, refresh_hz) in [(0, 0), (48, 144)] {
+                let text =
+                    Text { fps: 1234567890, cap, next: 1234, vrr, refresh_hz, vrr_min_hz: 48, frames_us: Vec::new() };
                 for ch in text.lines().concat().chars().filter(|c| *c != ' ') {
                     assert_ne!(glyph(ch), [0; GLYPH_H], "no glyph for {ch:?}");
                 }
@@ -225,7 +248,15 @@ mod tests {
 
     #[test]
     fn the_bitmap_scales_and_its_runs_cover_every_row() {
-        let text = Text { fps: 48, cap: 48, next: 0, vrr: VrrState::On, frames_us: Vec::new() };
+        let text = Text {
+            fps: 48,
+            cap: 48,
+            next: 0,
+            vrr: VrrState::On,
+            refresh_hz: 144,
+            vrr_min_hz: 48,
+            frames_us: Vec::new(),
+        };
         let one = Bitmap::render(&text, 1);
         let three = Bitmap::render(&text, 3);
         assert_eq!((three.width, three.height), (one.width * 3, one.height * 3));
@@ -250,8 +281,22 @@ mod tests {
         assert_eq!(column(first + 30), (0..=middle).collect::<Vec<_>>());
         assert_eq!(cells[first + 30], SPIKE);
         assert_eq!(cells[middle * GRAPH_FRAMES + first + 1], STEADY);
-        let text = Text { fps: 100, cap: 100, next: 0, vrr: VrrState::On, frames_us: frames };
+        let text =
+            Text { fps: 100, cap: 100, next: 0, vrr: VrrState::On, refresh_hz: 144, vrr_min_hz: 48, frames_us: frames };
         let bitmap = Bitmap::render(&text, 1);
         assert!(bitmap.pixels.contains(&SPIKE) && bitmap.pixels.contains(&STEADY));
+    }
+
+    #[test]
+    fn the_refresh_rate_follows_the_frame_rate_only_while_vrr_runs() {
+        let at = |fps, vrr| Text { fps, cap: 0, next: 0, vrr, refresh_hz: 144, vrr_min_hz: 48, frames_us: Vec::new() };
+        assert_eq!(at(115, VrrState::On).hz(), 115);
+        assert_eq!(at(115, VrrState::On).lines()[1], "UNCAPPED  VRR 115HZ");
+        // Under the window each frame is shown twice, or more.
+        assert_eq!(at(40, VrrState::On).hz(), 80);
+        assert_eq!(at(20, VrrState::On).hz(), 60);
+        assert_eq!(at(300, VrrState::On).hz(), 144);
+        assert_eq!(at(115, VrrState::Off).lines()[1], "UNCAPPED  VRR OFF 144HZ");
+        assert_eq!(at(115, VrrState::Unsupported).hz(), 144);
     }
 }

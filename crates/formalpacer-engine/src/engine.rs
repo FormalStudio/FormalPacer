@@ -446,11 +446,10 @@ impl Engine {
                     None
                 }
             };
-            let vrr = vrr_state(target.map(|(d, _)| d));
             match &mut session.feed {
                 Feed::Page(page) => {
                     page.set_target(cap.map_or(0, |c| c.interval_ns()), now);
-                    page.set_overlay(Overlay { show: self.config.overlay, vrr });
+                    page.set_overlay(overlay_for(target.map(|(d, _)| d), self.config.overlay));
                 }
                 #[cfg(windows)]
                 Feed::Measured { driver, rtss, live, foreground: seen, pid } => {
@@ -493,30 +492,33 @@ impl Engine {
                 } else {
                     driver.running()
                 };
+                let shown = overlay_for(display, true);
                 let text = formalpacer_hook::overlay::Text {
                     fps: s.stats.avg_fps.round() as u32,
                     cap: cap.unwrap_or(0),
                     next: if *live { 0 } else { driver.next().unwrap_or(0) },
-                    vrr: vrr_state(display),
+                    vrr: shown.vrr,
+                    refresh_hz: u32::from(shown.refresh_hz),
+                    vrr_min_hz: u32::from(shown.vrr_min_hz),
                     frames_us: s
                         .samples
                         .range(s.samples.len().saturating_sub(formalpacer_hook::overlay::GRAPH_FRAMES)..)
                         .map(|f| f.interval_us)
                         .collect(),
                 };
-                Some((text, *pid, *live))
+                Some((text, *pid, *live, vrr_state(display) == VrrState::On))
             });
-            let inside = overlay.as_ref().filter(|(_, _, live)| *live).map(|(text, ..)| {
+            let inside = overlay.as_ref().filter(|(_, _, live, _)| *live).map(|(text, ..)| {
                 let paced = if text.cap > 0 { text.cap } else { text.fps.max(1) };
                 (text.lines().join("\n"), 1e6 / paced as f32)
             });
             self.osd.show(inside.as_ref().map(|(lines, interval)| (lines.as_str(), *interval)));
             // A window over the game makes Windows compose the game, which turns G-SYNC off in
             // its default fullscreen-only mode: the window is for a game RTSS is not in, on a
-            // display without VRR running.
+            // display without VRR turned on. Not "running": the window itself stops it running.
             let shown = overlay
-                .filter(|(text, _, live)| !live && text.vrr != VrrState::On)
-                .and_then(|(text, pid, _)| Some(floating::Shown { text, monitor: floating::monitor_of(pid)? }));
+                .filter(|(_, _, live, vrr_on)| !live && !vrr_on)
+                .and_then(|(text, pid, ..)| Some(floating::Shown { text, monitor: floating::monitor_of(pid)? }));
             self.floating.show(shown);
         }
         Snapshot {
@@ -573,7 +575,7 @@ impl Engine {
                     if !process::exe_path(page.pid()).is_some_and(|exe| formalpacer_hook::library::may_hook(&exe)) =>
                 {
                     page.set_target(0, now);
-                    page.set_overlay(Overlay { show: false, vrr: VrrState::Unknown });
+                    page.set_overlay(Overlay::default());
                     self.rejected.insert(key);
                 }
                 Ok(page) => {
@@ -745,6 +747,29 @@ pub fn pick_display<'a>(
         .or_else(|| {
             displays.iter().max_by(|a, b| a.refresh_hz.total_cmp(&b.refresh_hz)).map(|d| (d, Placement::Fastest))
         })
+}
+
+/// The overlay's word on `display`: its refresh rate and VRR floor, and whether VRR is on, or
+/// where the driver says, whether it runs now. A game composed by Windows (a window over it, an
+/// overlay such as Discord's) is on fixed refresh though G-SYNC is turned on.
+fn overlay_for(display: Option<&Display>, show: bool) -> Overlay {
+    let vrr = match vrr_state(display) {
+        #[cfg(windows)]
+        VrrState::On
+            if display.is_some_and(|d| {
+                crate::nvidia::vrr(&format!("\\\\.\\{}", d.connector)).is_some_and(|v| !v.running)
+            }) =>
+        {
+            VrrState::Off
+        }
+        vrr => vrr,
+    };
+    Overlay {
+        show,
+        vrr,
+        refresh_hz: display.map_or(0, |d| d.refresh_hz.round() as u16),
+        vrr_min_hz: display.and_then(|d| d.vrr_range).map_or(0, |(min, _)| min.ceil() as u16),
+    }
 }
 
 fn vrr_state(display: Option<&Display>) -> VrrState {

@@ -162,6 +162,8 @@ pub struct VrrState {
     pub enabled: bool,
     /// The display and the driver can run it.
     pub possible: bool,
+    /// It runs now: a game presents on its own in a mode it covers.
+    pub running: bool,
 }
 
 /// G-SYNC on the display with GDI name `\\.\DISPLAY1`, or `None` when the NVIDIA driver does not
@@ -179,7 +181,7 @@ pub fn vrr(gdi_name: &str) -> Option<VrrState> {
     }
     // Bit 0 is bIsVRREnabled (running now), bit 1 bIsVRRPossible, bit 4 bIsDisplayInVRRMode (turned
     // on for the display, whatever is in front).
-    Some(VrrState { enabled: info.flags & 0x11 != 0, possible: info.flags & 2 != 0 })
+    Some(VrrState { enabled: info.flags & 0x11 != 0, possible: info.flags & 2 != 0, running: info.flags & 1 != 0 })
 }
 
 fn wide(s: &str) -> Box<UnicodeString> {
