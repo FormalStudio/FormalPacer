@@ -1,8 +1,9 @@
-//! The one thing FormalPacer asks an administrator for on Windows: adding the user to the
-//! Performance Log Users group, which may start the event traces PresentMon reads. Windows shows
-//! its own consent prompt; the group applies from the next sign-in.
+//! What FormalPacer asks an administrator for on Windows, each behind Windows' own consent prompt:
+//! adding the user to the Performance Log Users group, which may start the event traces PresentMon
+//! reads (from the next sign-in), and letting the user write RTSS's profiles.
 
 use std::io;
+use std::path::Path;
 
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject};
@@ -101,11 +102,27 @@ pub fn join_performance_log_users() -> io::Result<()> {
     let user = user()?;
     // Joining twice is not a failure: the first join only applies from the next sign-in. A caught
     // error still leaves `-Command` exiting with 1, hence the explicit exit.
-    let script = format!(
+    run_elevated(&format!(
         "try {{ Add-LocalGroupMember -SID '{GROUP_SID}' -Member '{}' -ErrorAction Stop }} \
          catch {{ if ($_.FullyQualifiedErrorId -notlike 'MemberExists*') {{ throw }} }}; exit 0",
         user.replace('\'', "''")
-    );
+    ))
+}
+
+/// Lets this user write RTSS's profiles, which sit under Program Files.
+pub fn allow_rtss_profiles(profiles: &Path) -> io::Result<()> {
+    let user = user()?;
+    let path = profiles.display().to_string();
+    run_elevated(&format!(
+        "New-Item -ItemType Directory -Force '{}' | Out-Null; icacls '{}' /grant '{}:(OI)(CI)M' | Out-Null; exit $LASTEXITCODE",
+        path.replace('\'', "''"),
+        path.replace('\'', "''"),
+        user.replace('\'', "''")
+    ))
+}
+
+/// Runs a PowerShell command as an administrator, behind Windows' own consent prompt.
+fn run_elevated(script: &str) -> io::Result<()> {
     let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let verb = wide("runas");
     let file = wide("powershell.exe");

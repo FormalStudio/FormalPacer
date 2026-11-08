@@ -18,6 +18,7 @@ pub fn snapshot() -> Snapshot {
         config: Config::default(),
         layer: LayerState::Installed("/usr/lib/formalpacer/libformalpacer_layer.so".into()),
         outside: None,
+        rtss: None,
         displays: vec![
             Display {
                 connector: "DP-1".into(),

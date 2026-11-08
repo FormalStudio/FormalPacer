@@ -20,6 +20,8 @@ mod presentmon;
 mod process;
 #[cfg(windows)]
 mod registry;
+#[cfg(windows)]
+mod rtss;
 pub mod steam;
 #[cfg(windows)]
 mod window;

@@ -97,9 +97,17 @@ that runs under a kernel anti-cheat.
   administrator are out of its reach.
 - Anti-cheat games like Fortnite, and any game the hook cannot get into, are measured from
   outside through Event Tracing for Windows with Intel's
-  [PresentMon](https://github.com/GameTechDev/PresentMon), and their cap goes to the NVIDIA
-  driver's frame rate limiter in the game's driver profile (Max Frame Rate in the NVIDIA app).
-  Nothing is loaded into the game. The driver reads the profile when a game starts, so a cap
+  [PresentMon](https://github.com/GameTechDev/PresentMon). With
+  [RTSS](https://www.guru3d.com/download/rtss-rivatuner-statistics-server-download/) running,
+  their cap goes to RTSS's frame rate limiter, which changes it from the next frame like the
+  layer does. FormalPacer writes the limit into the game's RTSS profile and puts the profile back
+  when the game exits. RTSS's profiles sit under Program Files, so FormalPacer asks once for an
+  administrator to let you write them. RTSS's wait counts as the frame's work to PresentMon, so
+  under an RTSS cap a game looks exactly as fast as the cap: while it holds the cap steady,
+  FormalPacer tries one step higher every five seconds and backs off as above if it cannot hold
+  it.
+- Without RTSS, the cap goes to the NVIDIA driver's frame rate limiter in the game's driver
+  profile (Max Frame Rate in the NVIDIA app). The driver reads the profile when a game starts, so a cap
   planned during one run holds from the next launch, and the window says what the driver holds
   for the run now going. Within a run that cap only goes up, so a menu or lobby running slower
   than play never becomes the next run's cap. Only a game that has been in the foreground gets a driver cap, and
@@ -111,7 +119,9 @@ that runs under a kernel anti-cheat.
 RTSS and Special K hook anti-cheat games too. Anti-cheats let RTSS do that because its DLLs are
 signed and on their allow lists; an unsigned DLL in Fortnite is exactly what Easy Anti-Cheat looks
 for, and Valve banned CS2 players in 2023 for AMD's Anti-Lag+, which hooked the game's DLLs. Event
-tracing and the driver's own limiter touch no game process.
+tracing and the driver's own limiter touch no game process, and FormalPacer only edits RTSS's
+profiles, never the game. The NVIDIA driver's limiter cannot change a running game: a test game
+stayed at 200 fps on Direct3D 11, Direct3D 12 and Vulkan after its limit was set to 60 mid-run.
 
 A game is anything presenting from where the stores install games (Steam, Epic, GOG, Xbox, Riot,
 EA, Ubisoft, Battle.net), apart from their launchers and tools such as Wallpaper Engine, or

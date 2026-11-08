@@ -13,7 +13,7 @@ use crate::display::{self, Display, Vrr};
 use crate::layer::{self, LayerState};
 use crate::pacing::{self, Cap, Pacer, Stats};
 #[cfg(windows)]
-use crate::{driver, floating, presentmon};
+use crate::{driver, floating, presentmon, rtss};
 use crate::{placement, process, steam};
 
 const TICK: Duration = Duration::from_millis(250);
@@ -35,6 +35,8 @@ pub enum Command {
     /// Windows: asks for an administrator to add this user to Performance Log Users, which
     /// PresentMon needs.
     JoinPerformanceLogUsers,
+    /// Windows: asks for an administrator to let this user write RTSS's profiles.
+    AllowRtss,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -59,6 +61,9 @@ pub enum Limiter {
     /// `running` is what it holds for the run now going, if anything.
     /// `next` is what the game's next launch gets, when that differs.
     Driver { running: Option<u32>, next: Option<u32>, protected: bool },
+    /// RTSS, which the game lets in, from the next frame; `hooked` once RTSS is in the game.
+    /// While RTSS runs the driver holds no caps: one would hold the next launch under RTSS's.
+    Rtss { protected: bool, hooked: bool },
     /// Nothing can: the game is measured only. `protected` when a kernel anti-cheat is why the
     /// layer stays out and there is no NVIDIA driver to ask instead.
     None { protected: bool },
@@ -76,6 +81,17 @@ pub enum Outside {
     /// `PresentMon.exe` is not next to FormalPacer.
     Missing,
     Failed(String),
+}
+
+/// RivaTuner Statistics Server, which can change a measured game's cap while it runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rtss {
+    Missing,
+    /// Installed, not running.
+    Stopped,
+    /// Running, but only administrators may write its profiles until FormalPacer is let in.
+    Locked,
+    Ready,
 }
 
 /// How the game's display was found.
@@ -101,6 +117,8 @@ pub struct Snapshot {
     pub layer: LayerState,
     /// How games without the layer are measured; `None` where only the layer measures (Linux).
     pub outside: Option<Outside>,
+    /// `None` where there is no RTSS (Linux).
+    pub rtss: Option<Rtss>,
     pub displays: Vec<Display>,
     pub game: Option<Game>,
     /// The outcome of the last layer install, for the app to show once.
@@ -122,10 +140,11 @@ pub struct Handle {
 enum Feed {
     /// A page the layer in the game writes and reads.
     Page(Mapping),
-    /// PresentMon measures it; the driver holds its cap. Only a game that has been in the
-    /// foreground gets one, so a launcher or tool presenting behind it never does.
+    /// PresentMon measures it; RTSS holds its cap when it is in the game (`live`), the driver
+    /// otherwise. Only a game that has been in the foreground gets one, so a launcher or tool
+    /// presenting behind it never does.
     #[cfg(windows)]
-    Measured { pid: u32, driver: driver::Cap, foreground: bool },
+    Measured { pid: u32, driver: driver::Cap, rtss: rtss::Limit, live: bool, foreground: bool },
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -179,6 +198,8 @@ struct Engine {
     joined: bool,
     #[cfg(windows)]
     floating: floating::Floating,
+    #[cfg(windows)]
+    rtss: Rtss,
     notice: Option<String>,
     last: Option<Snapshot>,
 }
@@ -203,8 +224,16 @@ impl Feed {
 
 impl Engine {
     fn new() -> Self {
+        #[allow(unused_mut)]
+        let mut config = config::load();
+        // Limits left behind by a FormalPacer that did not exit cleanly; a game still running gets
+        // its cap again on the next tick.
+        #[cfg(windows)]
+        if rtss::state() == Rtss::Ready {
+            let _ = rtss::restore_all(&mut config);
+        }
         Self {
-            config: config::load(),
+            config,
             layer: LayerState::Missing,
             displays: Vec::new(),
             probed: None,
@@ -220,6 +249,8 @@ impl Engine {
             joined: false,
             #[cfg(windows)]
             floating: floating::Floating::start(),
+            #[cfg(windows)]
+            rtss: Rtss::Missing,
             notice: None,
             last: None,
         }
@@ -264,9 +295,13 @@ impl Engine {
                     if let Err(e) = driver::restore_all(&mut self.config) {
                         self.notice = Some(format!("Could not clear the driver's frame rate limits: {e}"));
                     }
+                    if let Err(e) = rtss::restore_all(&mut self.config) {
+                        self.notice = Some(format!("Could not clear RTSS's frame rate limits: {e}"));
+                    }
                     for session in self.sessions.values_mut() {
-                        if let Feed::Measured { driver, .. } = &mut session.feed {
+                        if let Feed::Measured { driver, rtss, .. } = &mut session.feed {
                             driver.restored(&originals);
+                            rtss.released();
                         }
                     }
                 }
@@ -291,6 +326,19 @@ impl Engine {
                 }
                 return;
             }
+            Command::AllowRtss => {
+                #[cfg(windows)]
+                {
+                    let allowed = rtss::profiles()
+                        .ok_or_else(|| std::io::Error::other("RTSS is not installed"))
+                        .and_then(|p| crate::elevate::allow_rtss_profiles(&p));
+                    if let Err(e) = allowed {
+                        self.notice = Some(format!("Could not let FormalPacer set RTSS's limit: {e}"));
+                    }
+                    self.rtss = rtss::state();
+                }
+                return;
+            }
         }
         if let Err(e) = config::save(&self.config) {
             self.notice = Some(format!("Could not save settings: {e}"));
@@ -304,6 +352,10 @@ impl Engine {
             #[cfg(windows)]
             if self.presentmon.state() == Outside::Denied {
                 self.joined = crate::elevate::in_performance_log_users();
+            }
+            #[cfg(windows)]
+            {
+                self.rtss = rtss::state();
             }
             self.probed = Some(Instant::now());
         }
@@ -322,6 +374,10 @@ impl Engine {
         let foreground = crate::window::foreground_pid();
         #[cfg(not(windows))]
         let foreground = 0;
+        #[cfg(windows)]
+        let rtss_ready = self.rtss == Rtss::Ready;
+        #[cfg(windows)]
+        let hooked = if rtss_ready { rtss::hooked().unwrap_or_default() } else { HashSet::new() };
         let mut active: Option<(&Session, u64)> = None;
         for session in self.sessions.values_mut() {
             let pid = session.feed.pid();
@@ -357,13 +413,21 @@ impl Engine {
             let in_front = pid == foreground;
             #[cfg(not(windows))]
             let in_front = true;
+            #[cfg(windows)]
+            let blind = matches!(session.feed, Feed::Measured { .. }) && hooked.contains(&pid);
+            #[cfg(not(windows))]
+            let blind = false;
             let cap = match (self.config.mode, target.map(|(d, _)| d)) {
                 (Mode::Auto, Some(display)) => {
                     if session.display != display.connector {
                         session.pacer = Pacer::default();
                         session.display = display.connector.clone();
                     }
-                    if in_front { session.pacer.update(&session.stats, display, now_s) } else { session.pacer.cap }
+                    if in_front {
+                        session.pacer.update(&session.stats, display, now_s, blind)
+                    } else {
+                        session.pacer.cap
+                    }
                 }
                 (_, display) => {
                     session.pacer = Pacer::default();
@@ -378,13 +442,22 @@ impl Engine {
                     page.set_overlay(Overlay { show: self.config.overlay, vrr });
                 }
                 #[cfg(windows)]
-                Feed::Measured { driver, foreground: seen, pid } => {
+                Feed::Measured { driver, rtss, live, foreground: seen, pid } => {
                     *seen |= *pid == foreground;
-                    if self.config.mode == Mode::Auto
-                        && *seen
-                        && let Err(e) = driver.want(cap.map(|c| c.fps), &mut self.config)
-                    {
-                        self.notice = Some(format!("Could not set the driver's frame rate limit: {e}"));
+                    *live = hooked.contains(pid);
+                    if self.config.mode == Mode::Auto && *seen {
+                        let fps = cap.map(|c| c.fps);
+                        let set = if *live {
+                            rtss.want(fps, &mut self.config).and_then(|()| driver.release(&mut self.config))
+                        } else if rtss_ready {
+                            driver.release(&mut self.config)
+                        } else {
+                            driver.want(fps, &mut self.config)
+                        };
+                        if let Err(e) = set {
+                            let by = if *live { "RTSS's" } else { "the driver's" };
+                            self.notice = Some(format!("Could not set {by} frame rate limit: {e}"));
+                        }
                     }
                 }
             }
@@ -398,15 +471,21 @@ impl Engine {
         #[cfg(windows)]
         {
             let shown = active.and_then(|(s, _)| {
-                let Feed::Measured { pid, driver, .. } = &s.feed else { return None };
+                let Feed::Measured { pid, driver, rtss, live, .. } = &s.feed else { return None };
                 if !self.config.overlay || *pid != foreground {
                     return None;
                 }
                 let display = self.displays.iter().find(|d| d.connector == s.display);
+                // Under both limiters the lower one holds.
+                let cap = if *live {
+                    [rtss.applied(), driver.running()].into_iter().flatten().min()
+                } else {
+                    driver.running()
+                };
                 let text = formalpacer_hook::overlay::Text {
                     fps: s.stats.avg_fps.round() as u32,
-                    cap: driver.running().unwrap_or(0),
-                    next: driver.next().unwrap_or(0),
+                    cap: cap.unwrap_or(0),
+                    next: if *live { 0 } else { driver.next().unwrap_or(0) },
                     vrr: vrr_state(display),
                 };
                 Some(floating::Shown { text, monitor: floating::monitor_of(*pid)? })
@@ -417,6 +496,10 @@ impl Engine {
             config: self.config.clone(),
             layer: self.layer.clone(),
             outside,
+            #[cfg(windows)]
+            rtss: Some(self.rtss),
+            #[cfg(not(windows))]
+            rtss: None,
             displays: self.displays.clone(),
             game: active.map(|(s, _)| Game {
                 name: s.name.clone(),
@@ -431,6 +514,10 @@ impl Engine {
                 placement: s.placement,
                 limiter: match &s.feed {
                     Feed::Page(_) => Limiter::InGame,
+                    #[cfg(windows)]
+                    Feed::Measured { driver, live, .. } if *live || self.rtss == Rtss::Ready => {
+                        Limiter::Rtss { protected: driver.protected(), hooked: *live }
+                    }
                     #[cfg(windows)]
                     Feed::Measured { driver, .. } => driver.limiter(),
                 },
@@ -476,6 +563,8 @@ impl Engine {
         self.scan_presenters();
         #[cfg(windows)]
         let presentmon = self.presentmon.clone();
+        #[cfg(windows)]
+        let mut ended = Vec::new();
         self.sessions.retain(|key, s| {
             let (beat, exists) = match (&s.feed, key) {
                 (Feed::Page(page), Key::Page(path)) => (page.heartbeat_ns(), path.exists()),
@@ -490,11 +579,23 @@ impl Engine {
                     Feed::Page(page) if exists => page.unlink(),
                     Feed::Page(_) => {}
                     #[cfg(windows)]
-                    Feed::Measured { pid, .. } => presentmon.forget(*pid),
+                    Feed::Measured { pid, rtss, .. } => {
+                        presentmon.forget(*pid);
+                        ended.push(rtss.exe().to_owned());
+                    }
                 }
             }
             exists && !gone
         });
+        // A game's RTSS profile is its own again once it exits, unless another copy still runs.
+        #[cfg(windows)]
+        for exe in ended {
+            let running =
+                self.sessions.values().any(|s| matches!(&s.feed, Feed::Measured { rtss, .. } if rtss.exe() == exe));
+            if !running && let Err(e) = rtss::release(&exe, &mut self.config) {
+                self.notice = Some(format!("Could not clear RTSS's frame rate limit: {e}"));
+            }
+        }
     }
 
     /// Games PresentMon sees that no page reports: Direct3D and OpenGL games, Vulkan games
@@ -549,8 +650,9 @@ impl Engine {
                 continue;
             }
             let driver = driver::Cap::new(&presenter.name, pid, protected, &self.config);
+            let rtss = rtss::Limit::new(&presenter.name);
             let name = steam::app_name_for(&exe).unwrap_or(presenter.name);
-            let feed = Feed::Measured { pid, driver, foreground: pid == foreground };
+            let feed = Feed::Measured { pid, driver, rtss, live: false, foreground: pid == foreground };
             self.sessions.insert(Key::Process(pid), Session::new(feed, name));
         }
     }

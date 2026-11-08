@@ -1,7 +1,7 @@
 //! What the window, the tray item and `--headless` say about a snapshot.
 
 use formalpacer_engine::display::{Display, Vrr};
-use formalpacer_engine::engine::{Game, Limiter, Outside, Placement, Snapshot};
+use formalpacer_engine::engine::{Game, Limiter, Outside, Placement, Rtss, Snapshot};
 
 pub fn vrr(display: &Display) -> String {
     let range = display.vrr_range.map(|(lo, hi)| format!(", {lo:.0}–{hi:.0} Hz")).unwrap_or_default();
@@ -44,7 +44,7 @@ pub fn cap(snapshot: &Snapshot, game: &Game) -> String {
 }
 
 /// Who holds the cap, when it is not FormalPacer inside the game from the next frame.
-pub fn limiter(game: &Game) -> Option<String> {
+pub fn limiter(snapshot: &Snapshot, game: &Game) -> Option<String> {
     const ANTICHEAT: &str = "It runs under a kernel anti-cheat, so nothing of FormalPacer's goes inside it.";
     match &game.limiter {
         Limiter::InGame => None,
@@ -57,7 +57,18 @@ pub fn limiter(game: &Game) -> Option<String> {
                 now.push_str(&format!(" Restart the game to get {fps} fps."));
             }
             let why = if *protected { format!("{ANTICHEAT} ") } else { String::new() };
-            Some(format!("{why}The NVIDIA driver holds the cap from the game's next launch. {now}"))
+            let live = match snapshot.rtss {
+                Some(Rtss::Missing) => " Install RTSS to change it while the game runs.",
+                Some(Rtss::Stopped) => " Start RTSS to change it while the game runs.",
+                Some(Rtss::Locked) => " Allow FormalPacer to set RTSS's limit to change it while the game runs.",
+                Some(Rtss::Ready) | None => "",
+            };
+            Some(format!("{why}The NVIDIA driver holds the cap from the game's next launch. {now}{live}"))
+        }
+        Limiter::Rtss { protected, hooked } => {
+            let why = if *protected { format!("{ANTICHEAT} ") } else { String::new() };
+            let now = if *hooked { "" } else { " RTSS isn't in this run yet." };
+            Some(format!("{why}RTSS holds the cap and changes it as the game runs.{now}"))
         }
         Limiter::None { protected: true } => {
             Some(format!("{ANTICHEAT} Without an NVIDIA driver to hold a cap, it is measured only."))
@@ -66,6 +77,12 @@ pub fn limiter(game: &Game) -> Option<String> {
             Some("Measured only: the hook could not get into this game, and without an NVIDIA driver nothing else can cap it.".into())
         }
     }
+}
+
+/// Why RTSS cannot hold caps, when FormalPacer can do something about it.
+pub fn rtss(snapshot: &Snapshot) -> Option<&'static str> {
+    (snapshot.rtss == Some(Rtss::Locked))
+        .then_some("Anti-cheat games only get a new cap on relaunch: FormalPacer isn't allowed to set RTSS's limit yet")
 }
 
 /// Why anti-cheat games are not measured, if they are not.
@@ -96,7 +113,7 @@ pub fn state_line(snapshot: &Snapshot) -> String {
         };
     };
     let display = snapshot.display(&game.display);
-    let held = limiter(game).map(|l| format!(" ({l})")).unwrap_or_default();
+    let held = limiter(snapshot, game).map(|l| format!(" ({l})")).unwrap_or_default();
     format!(
         "{} on {} ({:.2} Hz, VRR {}, {}): cap {}{held}",
         game.name,

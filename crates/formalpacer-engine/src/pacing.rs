@@ -192,14 +192,25 @@ pub struct Pacer {
 }
 
 impl Pacer {
-    /// Feeds the newest stats at time `now_s`; returns the cap to hold.
-    pub fn update(&mut self, stats: &Stats, display: &Display, now_s: f64) -> Option<Cap> {
+    /// Feeds the newest stats at time `now_s`; returns the cap to hold. `blind` when the cap is
+    /// held by a limiter that waits inside the game's frame where the measuring cannot tell the
+    /// wait from work (RTSS under PresentMon): a game holding such a cap steady looks exactly as
+    /// fast as the cap, so whether it has more to give is found out a step at a time.
+    pub fn update(&mut self, stats: &Stats, display: &Display, now_s: f64, blind: bool) -> Option<Cap> {
         // Too little data, or a loading screen: hold what we have.
         if stats.span_s < 1.0 || stats.avg_fps < 10. {
             return self.cap;
         }
         let capacity = capacity(stats, display.refresh_hz);
-        let wanted = plan(capacity, display);
+        let mut wanted = plan(capacity, display);
+        if blind
+            && let Some(current) = self.cap
+            && stats.avg_fps >= current.fps * LOWER_AT
+            && stats.low_fps >= stats.avg_fps * STEADY
+        {
+            self.stepping = true;
+            wanted = next_step(current, display).or(Some(current));
+        }
         let Some(current) = self.cap else {
             self.cap = wanted;
             return self.cap;
@@ -329,17 +340,38 @@ mod tests {
     fn drops_fast_and_rises_slow() {
         let p = panel(144., Vrr::Unsupported);
         let mut pacer = Pacer::default();
-        assert_eq!(fps(pacer.update(&steady(160.), &p, 0.)), 144.);
+        assert_eq!(fps(pacer.update(&steady(160.), &p, 0., false)), 144.);
         // One short tick is a blip, two are a trend.
-        assert_eq!(fps(pacer.update(&steady(100.), &p, 0.25)), 144.);
-        assert_eq!(fps(pacer.update(&steady(100.), &p, 0.5)), 72.);
+        assert_eq!(fps(pacer.update(&steady(100.), &p, 0.25, false)), 144.);
+        assert_eq!(fps(pacer.update(&steady(100.), &p, 0.5, false)), 72.);
         // A brief recovery is not enough to go back up.
-        assert_eq!(fps(pacer.update(&steady(170.), &p, 1.)), 72.);
-        assert_eq!(fps(pacer.update(&steady(170.), &p, 5.)), 72.);
-        assert_eq!(fps(pacer.update(&steady(170.), &p, 6.1)), 144.);
+        assert_eq!(fps(pacer.update(&steady(170.), &p, 1., false)), 72.);
+        assert_eq!(fps(pacer.update(&steady(170.), &p, 5., false)), 72.);
+        assert_eq!(fps(pacer.update(&steady(170.), &p, 6.1, false)), 144.);
         // Small wobble under the headroom does not move the cap.
-        assert_eq!(fps(pacer.update(&steady(149.), &p, 7.)), 144.);
-        assert_eq!(fps(pacer.update(&steady(149.), &p, 7.5)), 144.);
+        assert_eq!(fps(pacer.update(&steady(149.), &p, 7., false)), 144.);
+        assert_eq!(fps(pacer.update(&steady(149.), &p, 7.5, false)), 144.);
+    }
+
+    #[test]
+    fn a_cap_that_hides_the_work_is_probed_one_step_up() {
+        let mut p = panel(144., Vrr::Active);
+        p.vrr_range = Some((30., 144.));
+        let mut pacer = Pacer::default();
+        assert_eq!(fps(pacer.update(&steady(100.), &p, 0., true)), 90.);
+        // Under the cap the game holds 90 steady, and the limiter's wait counts as its work.
+        let held = Stats { avg_fps: 90., low_fps: 88., capacity_fps: 90., frames: 200, span_s: 2. };
+        assert_eq!(fps(pacer.update(&held, &p, 1., true)), 90.);
+        assert_eq!(fps(pacer.update(&held, &p, 6.1, true)), 95.);
+        // A limiter that shows the work: the same numbers say the game is at its limit.
+        let mut seeing = Pacer::default();
+        seeing.update(&steady(100.), &p, 0., false);
+        seeing.update(&held, &p, 1., false);
+        assert_eq!(fps(seeing.update(&held, &p, 6.1, false)), 90.);
+        // 95 it cannot hold: down to what it showed, and no new try for 30 s.
+        assert_eq!(fps(pacer.update(&steady(93.), &p, 6.5, true)), 95.);
+        assert_eq!(fps(pacer.update(&steady(93.), &p, 6.75, true)), 85.);
+        assert_eq!(fps(pacer.update(&Stats { avg_fps: 85., low_fps: 84., ..held }, &p, 20., true)), 85.);
     }
 
     #[test]
@@ -348,28 +380,28 @@ mod tests {
         p.vrr_range = Some((30., 144.));
         let mut pacer = Pacer::default();
         // Uncapped, the game really runs at 40.
-        assert_eq!(fps(pacer.update(&steady(40.), &p, 0.)), 35.);
+        assert_eq!(fps(pacer.update(&steady(40.), &p, 0., false)), 35.);
         // Capped, its other threads work through the layer's sleep: it looks 50 times faster.
         let looks_fast = steady(2000.);
-        assert_eq!(fps(pacer.update(&looks_fast, &p, 1.)), 35.);
-        assert_eq!(fps(pacer.update(&looks_fast, &p, 6.1)), 138.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 1., false)), 35.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 6.1, false)), 138.);
         // It cannot hold that: back down, and no new try for 30 s however fast it looks.
-        assert_eq!(fps(pacer.update(&steady(40.), &p, 6.5)), 138.);
-        assert_eq!(fps(pacer.update(&steady(40.), &p, 6.75)), 35.);
+        assert_eq!(fps(pacer.update(&steady(40.), &p, 6.5, false)), 138.);
+        assert_eq!(fps(pacer.update(&steady(40.), &p, 6.75, false)), 35.);
         for t in [7., 20., 35.7] {
-            assert_eq!(fps(pacer.update(&looks_fast, &p, t)), 35., "at {t}");
+            assert_eq!(fps(pacer.update(&looks_fast, &p, t, false)), 35., "at {t}");
         }
         // Then, after the usual five seconds, one step up rather than back to 138.
-        assert_eq!(fps(pacer.update(&looks_fast, &p, 37.)), 35.);
-        assert_eq!(fps(pacer.update(&looks_fast, &p, 42.1)), 36.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 37., false)), 35.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 42.1, false)), 36.);
         // 36 holds; the next step, 45, does not: down again, and the next try waits 60 s.
-        assert_eq!(fps(pacer.update(&looks_fast, &p, 43.)), 36.);
-        assert_eq!(fps(pacer.update(&looks_fast, &p, 48.1)), 45.);
-        assert_eq!(fps(pacer.update(&steady(40.), &p, 48.3)), 45.);
-        assert_eq!(fps(pacer.update(&steady(40.), &p, 48.55)), 35.);
-        assert_eq!(fps(pacer.update(&looks_fast, &p, 100.)), 35.);
-        assert_eq!(fps(pacer.update(&looks_fast, &p, 109.)), 35.);
-        assert_eq!(fps(pacer.update(&looks_fast, &p, 114.1)), 36.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 43., false)), 36.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 48.1, false)), 45.);
+        assert_eq!(fps(pacer.update(&steady(40.), &p, 48.3, false)), 45.);
+        assert_eq!(fps(pacer.update(&steady(40.), &p, 48.55, false)), 35.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 100., false)), 35.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 109., false)), 35.);
+        assert_eq!(fps(pacer.update(&looks_fast, &p, 114.1, false)), 36.);
     }
 
     #[test]
@@ -378,9 +410,9 @@ mod tests {
         let mut pacer = Pacer::default();
         // Blocked in present for vsync: work reads as 140 fps while the game holds 144.
         let locked = Stats { avg_fps: 143.8, low_fps: 140., capacity_fps: 140., frames: 288, span_s: 2. };
-        assert_eq!(fps(pacer.update(&locked, &p, 0.)), 144.);
-        assert_eq!(fps(pacer.update(&locked, &p, 0.25)), 144.);
-        assert_eq!(fps(pacer.update(&locked, &p, 0.5)), 144.);
+        assert_eq!(fps(pacer.update(&locked, &p, 0., false)), 144.);
+        assert_eq!(fps(pacer.update(&locked, &p, 0.25, false)), 144.);
+        assert_eq!(fps(pacer.update(&locked, &p, 0.5, false)), 144.);
     }
 
     #[test]
@@ -394,7 +426,7 @@ mod tests {
         assert_eq!(fps(plan(capacity(&own, 144.), &p)), 60.);
         let mut pacer = Pacer::default();
         for t in [0., 0.25, 0.5, 10., 20.] {
-            assert_eq!(fps(pacer.update(&own, &p, t)), 60., "at {t}");
+            assert_eq!(fps(pacer.update(&own, &p, t, false)), 60., "at {t}");
         }
         // Uneven frames are not a limiter: the headroom stays.
         let rough = Stats { avg_fps: 120., low_fps: 80., capacity_fps: 110., frames: 240, span_s: 2. };
@@ -407,8 +439,8 @@ mod tests {
     #[test]
     fn follows_vrr_switching_off() {
         let mut pacer = Pacer::default();
-        assert_eq!(fps(pacer.update(&steady(100.), &panel(144., Vrr::Active), 0.)), 90.);
-        assert_eq!(fps(pacer.update(&steady(100.), &panel(144., Vrr::Off), 0.25)), 72.);
+        assert_eq!(fps(pacer.update(&steady(100.), &panel(144., Vrr::Active), 0., false)), 90.);
+        assert_eq!(fps(pacer.update(&steady(100.), &panel(144., Vrr::Off), 0.25, false)), 72.);
     }
 
     #[test]

@@ -31,6 +31,18 @@ pub struct Config {
     /// reads only from the next. It outlives a restart of FormalPacer while the game runs on.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub driver_runs: BTreeMap<String, DriverRun>,
+    /// Windows: games whose RTSS profile FormalPacer has set a limit in, with what the profile
+    /// was before, to put back when the game exits or pacing is switched off.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub rtss_profiles: BTreeMap<String, RtssProfile>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RtssProfile {
+    /// Whether the game had a profile of its own; one FormalPacer made is deleted again.
+    pub existed: bool,
+    /// Its limit, 0 for none.
+    pub limit: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +61,7 @@ impl Default for Config {
             overlay: true,
             driver_caps: BTreeMap::new(),
             driver_runs: BTreeMap::new(),
+            rtss_profiles: BTreeMap::new(),
         }
     }
 }

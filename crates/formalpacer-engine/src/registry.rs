@@ -92,13 +92,22 @@ pub fn register_implicit_layer(manifest: &Path) -> io::Result<()> {
 
 /// A string value under `HKEY_CURRENT_USER`.
 pub fn user_string(subkey: &str, value: &str) -> Option<String> {
+    string(HKEY_CURRENT_USER, subkey, value)
+}
+
+/// A string value under `HKEY_LOCAL_MACHINE`.
+pub fn machine_string(subkey: &str, value: &str) -> Option<String> {
+    string(HKEY_LOCAL_MACHINE, subkey, value)
+}
+
+fn string(root: HKEY, subkey: &str, value: &str) -> Option<String> {
     let (subkey, value) = (wide(subkey), wide(value));
     let mut buf = [0u16; 1024];
     let mut len = (buf.len() * 2) as u32;
     // SAFETY: NUL-terminated names and a buffer of the byte length passed.
     let status = unsafe {
         RegGetValueW(
-            HKEY_CURRENT_USER,
+            root,
             subkey.as_ptr(),
             value.as_ptr(),
             RRF_RT_REG_SZ,

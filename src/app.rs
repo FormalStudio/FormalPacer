@@ -85,6 +85,17 @@ impl Main {
             }
             out.push(item.into_any_element());
         }
+        if let Some(title) = model.snapshot.as_ref().and_then(words::rtss) {
+            out.push(
+                banner("rtss", title)
+                    .action("Allow")
+                    .revealed(true)
+                    .on_action(cx.listener(|this, _: &BannerActionClicked, _, cx| {
+                        this.send(Command::AllowRtss, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
         if let Some(notice) = model.notice.clone() {
             out.push(
                 banner("notice", notice)
@@ -120,7 +131,7 @@ impl Main {
                         text(game.name.clone()).text_size(theme.type_scale.headline).text_color(theme.text.secondary),
                     )
                     .child(text(words::cap(snapshot, game)).text_size(theme.type_scale.large_title))
-                    .children(words::limiter(game).map(|l| {
+                    .children(words::limiter(snapshot, game).map(|l| {
                         text(l).id("limiter").text_size(theme.type_scale.footnote).text_color(theme.text.secondary)
                     })),
             )

@@ -52,6 +52,10 @@ impl Cap {
         }
     }
 
+    pub fn protected(&self) -> bool {
+        self.protected
+    }
+
     /// What the driver holds for the run now going.
     pub fn running(&self) -> Option<u32> {
         self.running
@@ -90,6 +94,20 @@ impl Cap {
         nvidia::set_cap(&self.exe, Some(fps))?;
         self.written = Some(fps);
         self.wrote = true;
+        Ok(())
+    }
+
+    /// Another limiter holds the cap now: the profile gets the game's own limit back, from its
+    /// next launch.
+    pub fn release(&mut self, config: &mut Config) -> io::Result<()> {
+        let Some(&original) = config.driver_caps.get(&self.exe) else { return Ok(()) };
+        let original = (original > 0).then_some(original);
+        nvidia::set_cap(&self.exe, original)?;
+        config.driver_caps.remove(&self.exe);
+        crate::config::save(config)?;
+        self.written = original;
+        self.wrote = false;
+        self.wanted = None;
         Ok(())
     }
 
