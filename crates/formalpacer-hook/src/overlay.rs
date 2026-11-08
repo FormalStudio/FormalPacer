@@ -1,5 +1,5 @@
-//! The overlay's picture: two or three lines of text in a 5x7 pixel font on a dark box, as one byte per
-//! pixel. The Vulkan layer copies it into the swapchain image and the OpenGL hook clears it in
+//! The overlay's picture: two or three lines of text in a 5x7 pixel font on a dark box, and a
+//! graph of the newest frame times under them, as one byte per pixel. The Vulkan layer copies it into the swapchain image and the OpenGL hook clears it in
 //! runs, so neither needs shaders, a font atlas or blending.
 
 use formalpacer_shm::VrrState;
@@ -7,6 +7,10 @@ use formalpacer_shm::VrrState;
 pub const BACKGROUND: u8 = 0;
 pub const TEXT: u8 = 1;
 pub const DIM: u8 = 2;
+/// A frame in the graph that left on time.
+pub const STEADY: u8 = 3;
+/// A frame in the graph that took well over its interval.
+pub const SPIKE: u8 = 4;
 
 const GLYPH_W: usize = 5;
 const GLYPH_H: usize = 7;
@@ -19,7 +23,15 @@ const PADDING: usize = 3;
 pub const MARGIN: u32 = 4;
 
 /// RGBA for each pixel value.
-pub const COLORS: [[u8; 4]; 3] = [[16, 16, 18, 255], [242, 242, 242, 255], [150, 150, 156, 255]];
+pub const COLORS: [[u8; 4]; 5] =
+    [[16, 16, 18, 255], [242, 242, 242, 255], [150, 150, 156, 255], [96, 208, 120, 255], [240, 84, 72, 255]];
+
+/// Frames the graph shows, one cell column each.
+pub const GRAPH_FRAMES: usize = 90;
+/// Odd, so the frame interval the graph is centred on has a row of its own.
+const GRAPH_H: usize = 15;
+/// A frame this many times its interval or longer shows as a spike.
+const SPIKE_AT: f64 = 1.25;
 
 /// What the overlay says.
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +43,8 @@ pub struct Text {
     /// holds differs between runs.
     pub next: u32,
     pub vrr: VrrState,
+    /// The newest frame intervals, oldest first, up to [`GRAPH_FRAMES`]; none, no graph.
+    pub frames_us: Vec<u32>,
 }
 
 impl Text {
@@ -69,9 +83,18 @@ impl Bitmap {
     pub fn render(text: &Text, scale: u32) -> Self {
         let lines = text.lines();
         let chars = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-        let cols = PADDING * 2 + chars * (GLYPH_W + SPACING) - SPACING;
-        let rows = PADDING * 2 + lines.len() * (GLYPH_H + LEADING) - LEADING;
+        let graph = (!text.frames_us.is_empty()).then(|| plot(&text.frames_us, text.cap));
+        let cols =
+            PADDING * 2 + (chars * (GLYPH_W + SPACING) - SPACING).max(graph.as_ref().map_or(0, |_| GRAPH_FRAMES));
+        let text_rows = lines.len() * (GLYPH_H + LEADING) - LEADING;
+        let rows = PADDING * 2 + text_rows + graph.as_ref().map_or(0, |_| LEADING + GRAPH_H);
         let mut cells = vec![BACKGROUND; cols * rows];
+        if let Some(graph) = graph {
+            let top = PADDING + text_rows + LEADING;
+            for (y, row) in graph.chunks_exact(GRAPH_FRAMES).enumerate() {
+                cells[(top + y) * cols + PADDING..][..GRAPH_FRAMES].copy_from_slice(row);
+            }
+        }
         for (n, line) in lines.iter().enumerate() {
             let value = if n == 0 { TEXT } else { DIM };
             let top = PADDING + n * (GLYPH_H + LEADING);
@@ -117,6 +140,42 @@ impl Bitmap {
     }
 }
 
+/// The graph's cells, [`GRAPH_FRAMES`] wide and [`GRAPH_H`] tall, the newest frame on the right
+/// and longer frames higher up. The middle row, dotted, is the cap's interval (the usual one
+/// without a cap), so a game paced evenly draws a flat line along it.
+fn plot(frames_us: &[u32], cap: u32) -> Vec<u8> {
+    let mut cells = vec![BACKGROUND; GRAPH_FRAMES * GRAPH_H];
+    let shown = &frames_us[frames_us.len().saturating_sub(GRAPH_FRAMES)..];
+    let interval = if cap > 0 {
+        1e6 / f64::from(cap)
+    } else {
+        let mut sorted = shown.to_vec();
+        sorted.sort_unstable();
+        f64::from(sorted[sorted.len() / 2])
+    };
+    if interval <= 0. {
+        return cells;
+    }
+    let top = GRAPH_H - 1;
+    let row = |us: u32| top - ((f64::from(us) / (2. * interval) * top as f64).round() as usize).min(top);
+    let middle = row(interval.round() as u32);
+    for x in (0..GRAPH_FRAMES).step_by(2) {
+        cells[middle * GRAPH_FRAMES + x] = DIM;
+    }
+    let spike = |us: u32| f64::from(us) >= interval * SPIKE_AT;
+    let left = GRAPH_FRAMES - shown.len();
+    let mut prev: Option<u32> = None;
+    for (i, &us) in shown.iter().enumerate() {
+        let (a, b) = (row(us), prev.map_or(row(us), row));
+        let value = if spike(us) || prev.is_some_and(spike) { SPIKE } else { STEADY };
+        for y in a.min(b)..=a.max(b) {
+            cells[y * GRAPH_FRAMES + left + i] = value;
+        }
+        prev = Some(us);
+    }
+    cells
+}
+
 /// Rows of five bits, most significant bit on the left.
 fn glyph(ch: char) -> [u8; GLYPH_H] {
     match ch.to_ascii_uppercase() {
@@ -156,7 +215,7 @@ mod tests {
     fn every_character_the_overlay_can_say_has_a_glyph() {
         for vrr in [VrrState::On, VrrState::Off, VrrState::Unsupported, VrrState::Unknown] {
             for cap in [0, 48] {
-                let text = Text { fps: 1234567890, cap, next: 1234, vrr };
+                let text = Text { fps: 1234567890, cap, next: 1234, vrr, frames_us: Vec::new() };
                 for ch in text.lines().concat().chars().filter(|c| *c != ' ') {
                     assert_ne!(glyph(ch), [0; GLYPH_H], "no glyph for {ch:?}");
                 }
@@ -166,7 +225,7 @@ mod tests {
 
     #[test]
     fn the_bitmap_scales_and_its_runs_cover_every_row() {
-        let text = Text { fps: 48, cap: 48, next: 0, vrr: VrrState::On };
+        let text = Text { fps: 48, cap: 48, next: 0, vrr: VrrState::On, frames_us: Vec::new() };
         let one = Bitmap::render(&text, 1);
         let three = Bitmap::render(&text, 3);
         assert_eq!((three.width, three.height), (one.width * 3, one.height * 3));
@@ -176,5 +235,23 @@ mod tests {
         assert_eq!(covered, three.width * one.height);
         assert_eq!(scale_for(1080), 2);
         assert_eq!(scale_for(2160), 4);
+    }
+
+    #[test]
+    fn the_graph_draws_even_frames_flat_and_a_long_one_as_a_spike() {
+        let mut frames = vec![10_000; 40];
+        frames[30] = 25_000;
+        let cells = plot(&frames, 100);
+        let column = |x: usize| (0..GRAPH_H).filter(|&y| cells[y * GRAPH_FRAMES + x] >= STEADY).collect::<Vec<_>>();
+        let middle = GRAPH_H / 2;
+        let first = GRAPH_FRAMES - frames.len();
+        assert!(column(first - 1).is_empty());
+        assert_eq!(column(first + 1), [middle]);
+        assert_eq!(column(first + 30), (0..=middle).collect::<Vec<_>>());
+        assert_eq!(cells[first + 30], SPIKE);
+        assert_eq!(cells[middle * GRAPH_FRAMES + first + 1], STEADY);
+        let text = Text { fps: 100, cap: 100, next: 0, vrr: VrrState::On, frames_us: frames };
+        let bitmap = Bitmap::render(&text, 1);
+        assert!(bitmap.pixels.contains(&SPIKE) && bitmap.pixels.contains(&STEADY));
     }
 }

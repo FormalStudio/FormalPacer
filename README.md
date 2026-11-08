@@ -73,7 +73,9 @@ comes from the monitor's EDID.
 ![The overlay over a Proton game: 138 FPS, CAP 138, VRR ON](docs/images/overlay.png)
 
 The top-left corner of the game shows the frame rate, the cap and whether VRR is running on the
-game's display. It is drawn into the game's own frames, so it shows up in fullscreen, in
+game's display, over a graph of the newest frame times. The graph is centred on the cap's
+interval: a game paced evenly draws a flat line through the middle, and a frame that took a
+quarter longer or more shows red. It is drawn into the game's own frames, so it shows up in fullscreen, in
 screenshots and in recordings. Right Shift + F10 toggles it in game (through the X server, so
 Proton and other XWayland games). The tray item and the window toggle it too, and
 `formalpacer --toggle-overlay` does it from a compositor key binding, which also covers

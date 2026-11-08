@@ -498,11 +498,19 @@ impl Engine {
                     cap: cap.unwrap_or(0),
                     next: if *live { 0 } else { driver.next().unwrap_or(0) },
                     vrr: vrr_state(display),
+                    frames_us: s
+                        .samples
+                        .range(s.samples.len().saturating_sub(formalpacer_hook::overlay::GRAPH_FRAMES)..)
+                        .map(|f| f.interval_us)
+                        .collect(),
                 };
                 Some((text, *pid, *live))
             });
-            let inside = overlay.as_ref().filter(|(_, _, live)| *live).map(|(text, ..)| text.lines().join("\n"));
-            self.osd.show(inside.as_deref());
+            let inside = overlay.as_ref().filter(|(_, _, live)| *live).map(|(text, ..)| {
+                let paced = if text.cap > 0 { text.cap } else { text.fps.max(1) };
+                (text.lines().join("\n"), 1e6 / paced as f32)
+            });
+            self.osd.show(inside.as_ref().map(|(lines, interval)| (lines.as_str(), *interval)));
             // A window over the game makes Windows compose the game, which turns G-SYNC off in
             // its default fullscreen-only mode: the window is for a game RTSS is not in, on a
             // display without VRR running.

@@ -43,10 +43,23 @@ const LIMIT: &std::ffi::CStr = c"FramerateLimit";
 const OSD_OWNER: &[u8] = b"FormalPacer";
 /// The shared memory version with the OSD lock, `dwBusy` (2.14).
 const OSD_LOCKED_VERSION: u32 = 0x0002_000e;
-/// Offsets in RTSS_SHARED_MEMORY_OSD_ENTRY: `szOSDOwner[256]`, then `szOSDEx[4096]`.
+/// Offsets in RTSS_SHARED_MEMORY_OSD_ENTRY: `szOSDOwner[256]`, `szOSDEx[4096]`, then `buffer`,
+/// which holds the objects the text embeds.
 const OSD_OWNER_AT: usize = 256;
 const OSD_TEXT_AT: usize = 512;
 const OSD_TEXT_LEN: usize = 4096;
+const OSD_BUFFER_AT: usize = OSD_TEXT_AT + OSD_TEXT_LEN;
+/// RTSS_EMBEDDED_OBJECT_GRAPH: the object header (signature, size, width, height, margin), then
+/// flags, min, max and the data count, with no data when RTSS plots the frame times itself.
+const GRAPH_SIZE: usize = 36;
+const GRAPH_SIGNATURE: u32 = u32::from_be_bytes(*b"GR00");
+/// RTSS_EMBEDDED_OBJECT_GRAPH_FLAG_FRAMETIME: RTSS fills the graph with the game's frame times,
+/// in microseconds, every frame. RTSS_EMBEDDED_OBJECT_GRAPH_FLAG_BGND: on a box, which shows
+/// where the middle is.
+const GRAPH_FLAGS: u32 = 4 | 16;
+/// The graph's size; negative sizes are in characters and lines of the OSD's font.
+const GRAPH_WIDTH: i32 = -20;
+const GRAPH_HEIGHT: i32 = -3;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
@@ -142,7 +155,9 @@ impl Osd {
         Self { shown: false }
     }
 
-    pub fn show(&mut self, text: Option<&str>) {
+    /// Shows `lines` and a graph of the game's frame times, with the frame interval
+    /// `interval_us` in its middle so a game paced evenly draws a flat line there.
+    pub fn show(&mut self, text: Option<(&str, f32)>) {
         match text {
             Some(text) => self.shown |= write_osd(Some(text)),
             None if self.shown => self.shown = !write_osd(None),
@@ -157,10 +172,10 @@ impl Drop for Osd {
     }
 }
 
-/// Writes `text` into FormalPacer's OSD slot, claiming a free one first, or empties the slot for
-/// `None`, the way RTSS's SDK sample does. Slot 0 is left to Afterburner and its kind. Returns
+/// Writes the lines and the frame time graph into FormalPacer's OSD slot, claiming a free one
+/// first, or empties the slot for `None`, the way RTSS's SDK sample does. Slot 0 is left to Afterburner and its kind. Returns
 /// whether it was done: RTSS may hold the OSD while it draws, and then the next tick tries again.
-fn write_osd(text: Option<&str>) -> bool {
+fn write_osd(text: Option<(&str, f32)>) -> bool {
     with_shared(FILE_MAP_READ | FILE_MAP_WRITE, |base, size| {
         // SAFETY: a live view of `size` bytes; every offset below is checked against it.
         unsafe {
@@ -169,7 +184,7 @@ fn write_osd(text: Option<&str>) -> bool {
                 return None;
             }
             let (entry, offset, count) = (word(20)? as usize, word(24)? as usize, word(28)? as usize);
-            if entry < OSD_TEXT_AT + OSD_TEXT_LEN || offset + count * entry > size {
+            if entry < OSD_BUFFER_AT + GRAPH_SIZE || offset + count * entry > size {
                 return None;
             }
             let slot = |i: usize| base.add(offset + i * entry);
@@ -179,7 +194,7 @@ fn write_osd(text: Option<&str>) -> bool {
             };
             let frame = AtomicU32::from_ptr(base.add(32).cast());
             let owned = (1..count).find(|&i| owner(i) == OSD_OWNER);
-            let Some(text) = text else {
+            let Some((lines, interval_us)) = text else {
                 if let Some(i) = owned {
                     slot(i).write_bytes(0, entry);
                     frame.fetch_add(1, Ordering::SeqCst);
@@ -194,6 +209,19 @@ fn write_osd(text: Option<&str>) -> bool {
             let owner_field = slot(i).add(OSD_OWNER_AT);
             owner_field.copy_from_nonoverlapping(OSD_OWNER.as_ptr(), OSD_OWNER.len());
             owner_field.add(OSD_OWNER.len()).write(0);
+            let graph: [[u8; 4]; GRAPH_SIZE / 4] = [
+                GRAPH_SIGNATURE.to_le_bytes(),
+                (GRAPH_SIZE as u32).to_le_bytes(),
+                GRAPH_WIDTH.to_le_bytes(),
+                GRAPH_HEIGHT.to_le_bytes(),
+                1i32.to_le_bytes(),
+                GRAPH_FLAGS.to_le_bytes(),
+                0f32.to_le_bytes(),
+                (2. * interval_us).to_le_bytes(),
+                0u32.to_le_bytes(),
+            ];
+            slot(i).add(OSD_BUFFER_AT).copy_from_nonoverlapping(graph.as_flattened().as_ptr(), GRAPH_SIZE);
+            let text = format!("{lines}\n<OBJ=00000000>");
             let len = text.len().min(OSD_TEXT_LEN - 1);
             let text_field = slot(i).add(OSD_TEXT_AT);
             text_field.copy_from_nonoverlapping(text.as_ptr(), len);

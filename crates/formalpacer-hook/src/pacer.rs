@@ -1,6 +1,7 @@
 //! The limiter. It sleeps before present until the next deadline, keeping deadlines on one
 //! cadence so frames leave at even intervals, and records every frame for the app.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -20,6 +21,9 @@ static X11_WINDOW: AtomicU32 = AtomicU32::new(0);
 
 /// The overlay's frame rate is counted over this long.
 const FPS_WINDOW_NS: u64 = 500_000_000;
+/// The overlay's graph moves on this often rather than every frame, which would mean a new
+/// picture for the GPU every frame.
+const GRAPH_EVERY_NS: u64 = 33_000_000;
 
 /// The window of the newest X11 surface; the app asks the X server where it is.
 pub fn note_x11_window(window: u32) {
@@ -57,6 +61,10 @@ struct State {
     fps_since: u64,
     fps_frames: u32,
     fps: u32,
+    /// The newest frame intervals, for the graph.
+    intervals_us: VecDeque<u32>,
+    graph_at: u64,
+    graph: Vec<u32>,
     frame: Option<(Text, Frame)>,
 }
 
@@ -69,6 +77,9 @@ static STATE: Mutex<State> = Mutex::new(State {
     fps_since: 0,
     fps_frames: 0,
     fps: 0,
+    intervals_us: VecDeque::new(),
+    graph_at: 0,
+    graph: Vec::new(),
     frame: None,
 });
 
@@ -80,12 +91,18 @@ pub fn overlay(swap_height: u32) -> Option<Frame> {
     if !wanted.show {
         return None;
     }
-    let target = page.target(now_ns(), STALE_NS);
+    let now = now_ns();
+    let target = page.target(now, STALE_NS);
+    if now.saturating_sub(state.graph_at) >= GRAPH_EVERY_NS {
+        state.graph_at = now;
+        state.graph = state.intervals_us.iter().copied().collect();
+    }
     let text = Text {
         fps: state.fps,
         cap: if target > 0 { (1e9 / target as f64).round() as u32 } else { 0 },
         next: 0,
         vrr: wanted.vrr,
+        frames_us: state.graph.clone(),
     };
     let scale = overlay::scale_for(swap_height);
     if let Some((shown, frame)) = &state.frame
@@ -146,11 +163,16 @@ pub fn before_present(game: &Game) {
         state.fps_since = mark;
         state.fps_frames = 0;
     }
-    if state.last_mark != 0
-        && let Some(page) = &state.page
-    {
+    if state.last_mark != 0 {
         let us = |ns: u64| (ns / 1000).min(u64::from(u32::MAX)) as u32;
-        page.push(Sample { interval_us: us(mark - state.last_mark), slept_us: us(mark - now) }, mark);
+        let interval_us = us(mark - state.last_mark);
+        if state.intervals_us.len() == overlay::GRAPH_FRAMES {
+            state.intervals_us.pop_front();
+        }
+        state.intervals_us.push_back(interval_us);
+        if let Some(page) = &state.page {
+            page.push(Sample { interval_us, slept_us: us(mark - now) }, mark);
+        }
     }
     state.last_mark = mark;
 }
