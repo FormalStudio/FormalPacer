@@ -1,4 +1,4 @@
-//! The overlay's picture: two lines of text in a 5x7 pixel font on a dark box, as one byte per
+//! The overlay's picture: two or three lines of text in a 5x7 pixel font on a dark box, as one byte per
 //! pixel. The Vulkan layer copies it into the swapchain image and the OpenGL hook clears it in
 //! runs, so neither needs shaders, a font atlas or blending.
 
@@ -27,11 +27,14 @@ pub struct Text {
     pub fps: u32,
     /// The cap in fps, 0 for none.
     pub cap: u32,
+    /// The cap the game's next launch gets, 0 when it is the one it has now. Only a cap the driver
+    /// holds differs between runs.
+    pub next: u32,
     pub vrr: VrrState,
 }
 
 impl Text {
-    pub fn lines(&self) -> [String; 2] {
+    pub fn lines(&self) -> Vec<String> {
         let vrr = match self.vrr {
             VrrState::On => "VRR ON",
             VrrState::Off => "VRR OFF",
@@ -40,7 +43,11 @@ impl Text {
         };
         let cap = if self.cap > 0 { format!("CAP {}", self.cap) } else { "UNCAPPED".to_owned() };
         let second = if vrr.is_empty() { cap } else { format!("{cap}  {vrr}") };
-        [format!("{} FPS", self.fps), second]
+        let mut lines = vec![format!("{} FPS", self.fps), second];
+        if self.next > 0 {
+            lines.push(format!("RELAUNCH FOR CAP {}", self.next));
+        }
+        lines
     }
 }
 
@@ -63,7 +70,7 @@ impl Bitmap {
         let lines = text.lines();
         let chars = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
         let cols = PADDING * 2 + chars * (GLYPH_W + SPACING) - SPACING;
-        let rows = PADDING * 2 + 2 * GLYPH_H + LEADING;
+        let rows = PADDING * 2 + lines.len() * (GLYPH_H + LEADING) - LEADING;
         let mut cells = vec![BACKGROUND; cols * rows];
         for (n, line) in lines.iter().enumerate() {
             let value = if n == 0 { TEXT } else { DIM };
@@ -128,6 +135,8 @@ fn glyph(ch: char) -> [u8; GLYPH_H] {
         'D' => [0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C],
         'E' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],
         'F' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10],
+        'H' => [0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+        'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F],
         'N' => [0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11],
         'O' => [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
         'P' => [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10],
@@ -147,7 +156,7 @@ mod tests {
     fn every_character_the_overlay_can_say_has_a_glyph() {
         for vrr in [VrrState::On, VrrState::Off, VrrState::Unsupported, VrrState::Unknown] {
             for cap in [0, 48] {
-                let text = Text { fps: 1234567890, cap, vrr };
+                let text = Text { fps: 1234567890, cap, next: 1234, vrr };
                 for ch in text.lines().concat().chars().filter(|c| *c != ' ') {
                     assert_ne!(glyph(ch), [0; GLYPH_H], "no glyph for {ch:?}");
                 }
@@ -157,7 +166,7 @@ mod tests {
 
     #[test]
     fn the_bitmap_scales_and_its_runs_cover_every_row() {
-        let text = Text { fps: 48, cap: 48, vrr: VrrState::On };
+        let text = Text { fps: 48, cap: 48, next: 0, vrr: VrrState::On };
         let one = Bitmap::render(&text, 1);
         let three = Bitmap::render(&text, 3);
         assert_eq!((three.width, three.height), (one.width * 3, one.height * 3));

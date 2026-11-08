@@ -57,7 +57,8 @@ pub enum Limiter {
     InGame,
     /// The NVIDIA driver, from the game's next launch: it reads its profile when a game starts.
     /// `running` is what it holds for the run now going, if anything.
-    Driver { running: Option<u32>, protected: bool },
+    /// `next` is what the game's next launch gets, when that differs.
+    Driver { running: Option<u32>, next: Option<u32>, protected: bool },
     /// Nothing can: the game is measured only. `protected` when a kernel anti-cheat is why the
     /// layer stays out and there is no NVIDIA driver to ask instead.
     None { protected: bool },
@@ -259,12 +260,13 @@ impl Engine {
                 self.config.mode = mode;
                 #[cfg(windows)]
                 if mode == Mode::Off {
+                    let originals = self.config.driver_caps.clone();
                     if let Err(e) = driver::restore_all(&mut self.config) {
                         self.notice = Some(format!("Could not clear the driver's frame rate limits: {e}"));
                     }
                     for session in self.sessions.values_mut() {
                         if let Feed::Measured { driver, .. } = &mut session.feed {
-                            driver.restored();
+                            driver.restored(&originals);
                         }
                     }
                 }
@@ -404,6 +406,7 @@ impl Engine {
                 let text = formalpacer_hook::overlay::Text {
                     fps: s.stats.avg_fps.round() as u32,
                     cap: driver.running().unwrap_or(0),
+                    next: driver.next().unwrap_or(0),
                     vrr: vrr_state(display),
                 };
                 Some(floating::Shown { text, monitor: floating::monitor_of(*pid)? })
@@ -545,7 +548,7 @@ impl Engine {
             if !presenting.contains(&pid) {
                 continue;
             }
-            let driver = driver::Cap::new(&presenter.name, protected);
+            let driver = driver::Cap::new(&presenter.name, pid, protected, &self.config);
             let name = steam::app_name_for(&exe).unwrap_or(presenter.name);
             let feed = Feed::Measured { pid, driver, foreground: pid == foreground };
             self.sessions.insert(Key::Process(pid), Session::new(feed, name));

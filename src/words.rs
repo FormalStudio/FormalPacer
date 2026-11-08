@@ -48,11 +48,14 @@ pub fn limiter(game: &Game) -> Option<String> {
     const ANTICHEAT: &str = "It runs under a kernel anti-cheat, so nothing of FormalPacer's goes inside it.";
     match &game.limiter {
         Limiter::InGame => None,
-        Limiter::Driver { running, protected } => {
-            let now = match running {
+        Limiter::Driver { running, next, protected } => {
+            let mut now = match running {
                 Some(fps) => format!("This run is held at {fps} fps."),
                 None => "This run has no driver limit.".into(),
             };
+            if let Some(fps) = next {
+                now.push_str(&format!(" Restart the game to get {fps} fps."));
+            }
             let why = if *protected { format!("{ANTICHEAT} ") } else { String::new() };
             Some(format!("{why}The NVIDIA driver holds the cap from the game's next launch. {now}"))
         }

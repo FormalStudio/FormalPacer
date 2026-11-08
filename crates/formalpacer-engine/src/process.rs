@@ -32,6 +32,21 @@ pub fn alive(pid: u32) -> bool {
     running
 }
 
+/// When the process started, in Windows file time: with the pid, which run of a game it is.
+#[cfg(windows)]
+pub fn started(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::GetProcessTimes;
+    let handle = open(pid)?;
+    let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: a live handle and four times to fill; the handle is closed right after.
+    let ok = unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) != 0 };
+    // SAFETY: as above.
+    unsafe { CloseHandle(handle) };
+    ok.then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+}
+
 #[cfg(windows)]
 pub fn exe_path(pid: u32) -> Option<PathBuf> {
     use windows_sys::Win32::Foundation::CloseHandle;

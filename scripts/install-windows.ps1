@@ -22,7 +22,10 @@ if (-not (Test-Path $presentmon) -or (Get-FileHash $presentmon).Hash -ne $presen
 
 $dir = Join-Path $env:LOCALAPPDATA "Programs\FormalPacer"
 New-Item -ItemType Directory -Force $dir | Out-Null
-Get-Process formalpacer -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "$dir\formalpacer.exe" } | Stop-Process
+# Stop-Process returns before the process is gone, and its executable stays locked until then.
+$running = Get-Process formalpacer -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "$dir\formalpacer.exe" }
+$running | Stop-Process
+$running | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
 # The layer or the hook still loaded in a running program cannot be replaced, but it can be moved
 # aside; the old copy is deleted on a later install, once nothing has it loaded.
 Get-ChildItem $dir -Filter *.old | Remove-Item -ErrorAction SilentlyContinue

@@ -105,7 +105,8 @@ that runs under a kernel anti-cheat.
   than play never becomes the next run's cap. Only a game that has been in the foreground gets a driver cap, and
   switching pacing off puts back the limit each game had before. Their overlay is a window of
   FormalPacer's own over the game's corner, on top, unfocusable and transparent to clicks, shown
-  while the game is in front; its cap is what the driver holds for this run.
+  while the game is in front; its cap is what the driver holds for this run, with a third line
+  ("RELAUNCH FOR CAP 138") once the next launch will get a different one.
 
 RTSS and Special K hook anti-cheat games too. Anti-cheats let RTSS do that because its DLLs are
 signed and on their allow lists; an unsigned DLL in Fortnite is exactly what Easy Anti-Cheat looks

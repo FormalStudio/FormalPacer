@@ -84,6 +84,7 @@ pub fn overlay(swap_height: u32) -> Option<Frame> {
     let text = Text {
         fps: state.fps,
         cap: if target > 0 { (1e9 / target as f64).round() as u32 } else { 0 },
+        next: 0,
         vrr: wanted.vrr,
     };
     let scale = overlay::scale_for(swap_height);

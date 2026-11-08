@@ -7,12 +7,13 @@
 //! then) writes nothing.
 //!
 //! Whatever the game's profile held before FormalPacer first wrote to it is kept in the config and
-//! put back when pacing is switched off.
+//! put back when pacing is switched off. So is the run a cap was written during, with the limit it
+//! started with: the profile alone would tell a FormalPacer restarted mid-run the new cap is live.
 
 use std::io;
 use std::time::{Duration, Instant};
 
-use crate::config::Config;
+use crate::config::{Config, DriverRun};
 use crate::engine::Limiter;
 use crate::nvidia;
 
@@ -21,7 +22,9 @@ const SETTLE: Duration = Duration::from_secs(10);
 pub struct Cap {
     exe: String,
     protected: bool,
-    /// What the driver holds for the run now going: the profile's value when the game was found.
+    /// When the game's process started, which tells its runs apart.
+    started: Option<u64>,
+    /// What the driver holds for the run now going.
     running: Option<u32>,
     written: Option<u32>,
     /// Whether this run has written a cap yet; the first may lower the last run's.
@@ -30,14 +33,20 @@ pub struct Cap {
 }
 
 impl Cap {
-    pub fn new(exe: &str, protected: bool) -> Self {
-        let running = if nvidia::available() { nvidia::cap(exe).ok().flatten().filter(|&v| v > 0) } else { None };
-        Self { exe: exe.to_owned(), protected, running, written: running, wrote: false, wanted: None }
+    pub fn new(exe: &str, pid: u32, protected: bool, config: &Config) -> Self {
+        let profile = if nvidia::available() { nvidia::cap(exe).ok().flatten().filter(|&v| v > 0) } else { None };
+        let started = crate::process::started(pid);
+        let run = config.driver_runs.get(exe).filter(|r| started == Some(r.started));
+        let running = match run {
+            Some(r) => (r.held > 0).then_some(r.held),
+            None => profile,
+        };
+        Self { exe: exe.to_owned(), protected, started, running, written: profile, wrote: run.is_some(), wanted: None }
     }
 
     pub fn limiter(&self) -> Limiter {
         if nvidia::available() {
-            Limiter::Driver { running: self.running, protected: self.protected }
+            Limiter::Driver { running: self.running, next: self.next(), protected: self.protected }
         } else {
             Limiter::None { protected: self.protected }
         }
@@ -46,6 +55,11 @@ impl Cap {
     /// What the driver holds for the run now going.
     pub fn running(&self) -> Option<u32> {
         self.running
+    }
+
+    /// The cap the game's next launch gets, when it is not the one this run has.
+    pub fn next(&self) -> Option<u32> {
+        self.written.filter(|_| self.written != self.running)
     }
 
     /// The planner's cap for this game now.
@@ -66,18 +80,25 @@ impl Cap {
         if !config.driver_caps.contains_key(&self.exe) {
             let original = nvidia::cap(&self.exe)?.unwrap_or(0);
             config.driver_caps.insert(self.exe.clone(), original);
-            crate::config::save(config)?;
         }
+        if !self.wrote
+            && let Some(started) = self.started
+        {
+            config.driver_runs.insert(self.exe.clone(), DriverRun { started, held: self.running.unwrap_or(0) });
+        }
+        crate::config::save(config)?;
         nvidia::set_cap(&self.exe, Some(fps))?;
         self.written = Some(fps);
         self.wrote = true;
         Ok(())
     }
 
-    /// After [`restore_all`]: the profile holds the game's own limit again, so the next plan is
-    /// written whatever it is.
-    pub fn restored(&mut self) {
-        self.written = None;
+    /// After [`restore_all`], given the limits it put back: the profile holds the game's own limit
+    /// again, so the next plan is written whatever it is.
+    pub fn restored(&mut self, originals: &std::collections::BTreeMap<String, u32>) {
+        if let Some(&original) = originals.get(&self.exe) {
+            self.written = (original > 0).then_some(original);
+        }
         self.wrote = false;
         self.wanted = None;
     }

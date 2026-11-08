@@ -27,11 +27,29 @@ pub struct Config {
     /// before (0 for none), to put back when pacing is switched off.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub driver_caps: BTreeMap<String, u32>,
+    /// Windows: for each of those games, the run a cap was last written during, which the driver
+    /// reads only from the next. It outlives a restart of FormalPacer while the game runs on.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub driver_runs: BTreeMap<String, DriverRun>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriverRun {
+    /// When the game's process started, in Windows file time.
+    pub started: u64,
+    /// The limit that run started with, 0 for none.
+    pub held: u32,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { mode: Mode::Auto, display: None, overlay: true, driver_caps: BTreeMap::new() }
+        Self {
+            mode: Mode::Auto,
+            display: None,
+            overlay: true,
+            driver_caps: BTreeMap::new(),
+            driver_runs: BTreeMap::new(),
+        }
     }
 }
 
