@@ -103,9 +103,11 @@ that runs under a kernel anti-cheat.
   layer does. FormalPacer writes the limit into the game's RTSS profile and puts the profile back
   when the game exits. RTSS's profiles sit under Program Files, so FormalPacer asks once for an
   administrator to let you write them. RTSS's wait counts as the frame's work to PresentMon, so
-  under an RTSS cap a game looks exactly as fast as the cap: while it holds the cap steady,
-  FormalPacer tries one step higher every five seconds and backs off as above if it cannot hold
-  it.
+  under an RTSS cap a game looks exactly as fast as the cap and only the rate it reaches counts:
+  a game that holds the cap for five seconds gets one about a quarter higher (a step at a time
+  once a raise has failed, with the waits above), and one that stays under it for longer than a
+  hitch lasts is capped 8% under what it reaches, so it runs with room to spare like any other.
+  The overlay goes into RTSS's on-screen display, drawn inside the game's own frames.
 - Without RTSS, the cap goes to the NVIDIA driver's frame rate limiter in the game's driver
   profile (Max Frame Rate in the NVIDIA app). The driver reads the profile when a game starts, so a cap
   planned during one run holds from the next launch, and the window says what the driver holds
@@ -114,7 +116,10 @@ that runs under a kernel anti-cheat.
   switching pacing off puts back the limit each game had before. Their overlay is a window of
   FormalPacer's own over the game's corner, on top, unfocusable and transparent to clicks, shown
   while the game is in front; its cap is what the driver holds for this run, with a third line
-  ("RELAUNCH FOR CAP 138") once the next launch will get a different one.
+  ("RELAUNCH FOR CAP 138") once the next launch will get a different one. Any window over a game
+  makes Windows compose the game instead of letting it flip on its own, and G-SYNC in its default
+  fullscreen-only mode then stays off, so this window is left out while VRR is running. Discord's
+  in-game overlay is such a window over every game, and keeps G-SYNC off while it is enabled.
 
 RTSS and Special K hook anti-cheat games too. Anti-cheats let RTSS do that because its DLLs are
 signed and on their allow lists; an unsigned DLL in Fortnite is exactly what Easy Anti-Cheat looks
@@ -135,7 +140,8 @@ then sign out and back in. Until then a game without an anti-cheat still gets th
 window is in the foreground and fills its monitor.
 
 A game's cap is planned only from frames it ran in the foreground: a game behind another window
-often slows itself down, and its cap holds until it is back.
+often slows itself down, and its cap holds until it is back and three seconds of frames from the
+front have come in.
 
 Not done yet on Windows: AMD and Intel drivers have no limiter FormalPacer can set, so there
 games measured from outside are measured only. The overlay is drawn on 8-bit and scRGB back

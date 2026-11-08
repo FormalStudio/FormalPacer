@@ -166,6 +166,8 @@ struct Session {
     output: Option<String>,
     placed: Option<Instant>,
     toggles: u32,
+    /// When the game last came to the front, while it stays there.
+    front_since: Option<f64>,
 }
 
 pub fn start() -> std::io::Result<Handle> {
@@ -200,6 +202,8 @@ struct Engine {
     floating: floating::Floating,
     #[cfg(windows)]
     rtss: Rtss,
+    #[cfg(windows)]
+    osd: rtss::Osd,
     notice: Option<String>,
     last: Option<Snapshot>,
 }
@@ -251,6 +255,8 @@ impl Engine {
             floating: floating::Floating::start(),
             #[cfg(windows)]
             rtss: Rtss::Missing,
+            #[cfg(windows)]
+            osd: rtss::Osd::new(),
             notice: None,
             last: None,
         }
@@ -408,11 +414,16 @@ impl Engine {
                 session.placement = how;
             }
             // A game behind another window often slows itself down, and what it runs at then says
-            // nothing about what it can do in front: its cap holds until it is back.
+            // nothing about what it can do in front: its cap holds until it is back, and until
+            // the stats hold only frames from after that.
             #[cfg(windows)]
             let in_front = pid == foreground;
             #[cfg(not(windows))]
             let in_front = true;
+            if !in_front {
+                session.front_since = None;
+            }
+            let settled = in_front && now_s - *session.front_since.get_or_insert(now_s) >= pacing::SETTLE_S;
             #[cfg(windows)]
             let blind = matches!(session.feed, Feed::Measured { .. }) && hooked.contains(&pid);
             #[cfg(not(windows))]
@@ -423,7 +434,7 @@ impl Engine {
                         session.pacer = Pacer::default();
                         session.display = display.connector.clone();
                     }
-                    if in_front {
+                    if settled {
                         session.pacer.update(&session.stats, display, now_s, blind)
                     } else {
                         session.pacer.cap
@@ -470,7 +481,7 @@ impl Engine {
         }
         #[cfg(windows)]
         {
-            let shown = active.and_then(|(s, _)| {
+            let overlay = active.and_then(|(s, _)| {
                 let Feed::Measured { pid, driver, rtss, live, .. } = &s.feed else { return None };
                 if !self.config.overlay || *pid != foreground {
                     return None;
@@ -488,8 +499,16 @@ impl Engine {
                     next: if *live { 0 } else { driver.next().unwrap_or(0) },
                     vrr: vrr_state(display),
                 };
-                Some(floating::Shown { text, monitor: floating::monitor_of(*pid)? })
+                Some((text, *pid, *live))
             });
+            let inside = overlay.as_ref().filter(|(_, _, live)| *live).map(|(text, ..)| text.lines().join("\n"));
+            self.osd.show(inside.as_deref());
+            // A window over the game makes Windows compose the game, which turns G-SYNC off in
+            // its default fullscreen-only mode: the window is for a game RTSS is not in, on a
+            // display without VRR running.
+            let shown = overlay
+                .filter(|(text, _, live)| !live && text.vrr != VrrState::On)
+                .and_then(|(text, pid, _)| Some(floating::Shown { text, monitor: floating::monitor_of(pid)? }));
             self.floating.show(shown);
         }
         Snapshot {
@@ -684,6 +703,7 @@ impl Session {
             output: None,
             placed: None,
             toggles,
+            front_since: None,
         }
     }
 }

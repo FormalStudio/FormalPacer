@@ -19,8 +19,9 @@ anti-cheat (`formalpacer-hook/src/library.rs`), and any game the hook did not re
 seconds, is measured from outside by PresentMon (`engine/src/presentmon.rs`, a hidden child
 process) and capped live through RTSS when it runs (`rtss.rs`: profile calls in
 `RTSSHooks64.dll`, hooked pids from its shared memory), otherwise through the NVIDIA driver
-profile (`nvidia.rs`, `driver.rs`), which applies from the game's next launch; its overlay is a click-through topmost window of ours
-(`engine/src/floating.rs`). Never add anything that loads into an anti-cheat game: the engine
+profile (`nvidia.rs`, `driver.rs`), which applies from the game's next launch; its overlay is RTSS's on-screen display when RTSS is
+in the game, else a click-through topmost window of ours (`engine/src/floating.rs`), never shown
+while VRR runs because it makes Windows compose the game and G-SYNC turns off. Never add anything that loads into an anti-cheat game: the engine
 checks before injecting and the DLL checks again. Build there with `RUSTUP_TOOLCHAIN=1.95.0-x86_64-pc-windows-msvc`
 (the host default is the GNU toolchain).
 

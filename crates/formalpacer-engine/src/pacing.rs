@@ -33,6 +33,17 @@ const HEADROOM: f64 = 0.92;
 /// Lower the cap when the game sustains less than the cap over this factor.
 const LOWER_AT: f64 = 0.97;
 const RAISE_AFTER_S: f64 = 5.0;
+/// Under a blind cap (see [`Pacer::update`]) the rate a game reaches is all there is, and one
+/// hitch takes it a few percent under the cap for as long as the hitch is in the stats window:
+/// a game falls short only when it stays under the cap longer than that.
+const BLIND_SHORT_S: f64 = WINDOW_S + 0.5;
+/// A game this far under the cap it had before a raise is in a loading screen or a replay, which
+/// says nothing about the raise.
+const BLIND_SCENE: f64 = 0.9;
+/// How long the stats take to hold only frames from after a change (the stats window, and the
+/// second PresentMon takes to report a frame): after a new blind cap, or a game coming back to
+/// the front.
+pub const SETTLE_S: f64 = WINDOW_S + 1.0;
 /// A cap lowered this soon after it was raised was a raise the game could not hold.
 const FAILED_WITHIN_S: f64 = 10.0;
 const BACKOFF_START_S: f64 = 30.0;
@@ -182,8 +193,14 @@ pub struct Pacer {
     pub cap: Option<Cap>,
     higher_since: Option<f64>,
     short_ticks: u32,
+    /// When the game first fell short of the cap, while it still is.
+    short_since: Option<f64>,
     /// When the cap last went up, until that raise has held for `FAILED_WITHIN_S`.
     raised_at: Option<f64>,
+    /// The cap before that raise.
+    raised_from: f64,
+    /// When the cap last changed.
+    changed_at: f64,
     /// A raise failed: the game's work under a cap is not to be trusted.
     stepping: bool,
     /// No raise before this time, after a failed one.
@@ -194,25 +211,41 @@ pub struct Pacer {
 impl Pacer {
     /// Feeds the newest stats at time `now_s`; returns the cap to hold. `blind` when the cap is
     /// held by a limiter that waits inside the game's frame where the measuring cannot tell the
-    /// wait from work (RTSS under PresentMon): a game holding such a cap steady looks exactly as
-    /// fast as the cap, so whether it has more to give is found out a step at a time.
+    /// wait from work (RTSS under PresentMon): under such a cap a game's work looks exactly as
+    /// long as the cap's interval, so only the rate it reaches counts. One that holds the cap
+    /// may have more to give, which is found out by raising it; one that falls short has shown
+    /// what it can do, and is capped under it with the usual headroom.
     pub fn update(&mut self, stats: &Stats, display: &Display, now_s: f64, blind: bool) -> Option<Cap> {
         // Too little data, or a loading screen: hold what we have.
         if stats.span_s < 1.0 || stats.avg_fps < 10. {
             return self.cap;
         }
-        let capacity = capacity(stats, display.refresh_hz);
-        let mut wanted = plan(capacity, display);
-        if blind
-            && let Some(current) = self.cap
-            && stats.avg_fps >= current.fps * LOWER_AT
-            && stats.low_fps >= stats.avg_fps * STEADY
-        {
-            self.stepping = true;
-            wanted = next_step(current, display).or(Some(current));
-        }
+        let before = self.cap;
+        let (short, wanted) = match self.cap {
+            // Under a blind cap the rate reached is all there is, and until the window holds only
+            // frames from after the last change it is the old cap's.
+            Some(_) if blind && now_s - self.changed_at < SETTLE_S => return self.cap,
+            Some(current) if blind => {
+                let short = stats.avg_fps < current.fps * LOWER_AT;
+                let wanted = if !short {
+                    // A quarter up at a time, until a raise fails and the raises go a step at a time.
+                    plan_budget(current.fps * 1.25, display)
+                        .filter(|c| c.fps > current.fps + 0.01)
+                        .or_else(|| next_step(current, display))
+                        .or(Some(current))
+                } else {
+                    plan(stats.avg_fps, display)
+                };
+                (short, wanted)
+            }
+            current => {
+                let capacity = capacity(stats, display.refresh_hz);
+                (current.is_some_and(|c| capacity * LOWER_AT < c.fps), plan(capacity, display))
+            }
+        };
         let Some(current) = self.cap else {
             self.cap = wanted;
+            self.changed_at = now_s;
             return self.cap;
         };
         let wanted_fps = wanted.map_or(0., |c| c.fps);
@@ -222,10 +255,13 @@ impl Pacer {
         }
         if !self.fits(current, display) {
             self.adopt(wanted);
-        } else if capacity * LOWER_AT < current.fps {
+        } else if short {
             self.short_ticks += 1;
-            if self.short_ticks >= 2 {
-                if self.raised_at.take().is_some() {
+            let since = *self.short_since.get_or_insert(now_s);
+            if self.short_ticks >= 2 && (!blind || now_s - since >= BLIND_SHORT_S) {
+                let failed =
+                    self.raised_at.take().is_some() && (!blind || stats.avg_fps >= self.raised_from * BLIND_SCENE);
+                if failed {
                     self.stepping = true;
                     let backoff = if self.backoff_s > 0. { self.backoff_s } else { BACKOFF_START_S };
                     self.blocked_until = now_s + backoff;
@@ -235,15 +271,21 @@ impl Pacer {
             }
         } else if wanted_fps > current.fps + 0.01 && now_s >= self.blocked_until {
             self.short_ticks = 0;
+            self.short_since = None;
             let since = *self.higher_since.get_or_insert(now_s);
             if now_s - since >= RAISE_AFTER_S {
                 let raise = if self.stepping { next_step(current, display) } else { wanted };
                 self.adopt(raise);
                 self.raised_at = Some(now_s);
+                self.raised_from = current.fps;
             }
         } else {
             self.short_ticks = 0;
+            self.short_since = None;
             self.higher_since = None;
+        }
+        if self.cap != before {
+            self.changed_at = now_s;
         }
         self.cap
     }
@@ -261,6 +303,7 @@ impl Pacer {
         self.cap = cap;
         self.higher_since = None;
         self.short_ticks = 0;
+        self.short_since = None;
     }
 }
 
@@ -359,19 +402,56 @@ mod tests {
         p.vrr_range = Some((30., 144.));
         let mut pacer = Pacer::default();
         assert_eq!(fps(pacer.update(&steady(100.), &p, 0., true)), 90.);
-        // Under the cap the game holds 90 steady, and the limiter's wait counts as its work.
-        let held = Stats { avg_fps: 90., low_fps: 88., capacity_fps: 90., frames: 200, span_s: 2. };
-        assert_eq!(fps(pacer.update(&held, &p, 1., true)), 90.);
-        assert_eq!(fps(pacer.update(&held, &p, 6.1, true)), 95.);
-        // A limiter that shows the work: the same numbers say the game is at its limit.
+        // Under the cap the limiter's wait counts as work: the game looks exactly as fast as the
+        // cap, frame times as uneven as they come, and that never takes the cap down.
+        let held = Stats { avg_fps: 89.6, low_fps: 70., capacity_fps: 89.6, frames: 200, span_s: 2. };
+        for t in [0.25, 0.5, 1., 3.1] {
+            assert_eq!(fps(pacer.update(&held, &p, t, true)), 90., "at {t}");
+        }
+        assert_eq!(fps(pacer.update(&held, &p, 8.2, true)), 110.);
+        // For a while the window still holds frames from under 90.
+        for t in [8.45, 8.7, 10.] {
+            assert_eq!(fps(pacer.update(&held, &p, t, true)), 110., "at {t}");
+        }
+        // Read as work, the same numbers would take the cap down a step every few ticks.
         let mut seeing = Pacer::default();
         seeing.update(&steady(100.), &p, 0., false);
         seeing.update(&held, &p, 1., false);
-        assert_eq!(fps(seeing.update(&held, &p, 6.1, false)), 90.);
-        // 95 it cannot hold: down to what it showed, and no new try for 30 s.
-        assert_eq!(fps(pacer.update(&steady(93.), &p, 6.5, true)), 95.);
-        assert_eq!(fps(pacer.update(&steady(93.), &p, 6.75, true)), 85.);
-        assert_eq!(fps(pacer.update(&Stats { avg_fps: 85., low_fps: 84., ..held }, &p, 20., true)), 85.);
+        assert!(fps(seeing.update(&held, &p, 1.25, false)) < 90.);
+        // A hitch takes it a few percent under the cap: that is not falling short.
+        let hitch = Stats { avg_fps: 101., low_fps: 40., capacity_fps: 101., frames: 200, span_s: 2. };
+        for t in [11.3, 11.55, 11.8] {
+            assert_eq!(fps(pacer.update(&hitch, &p, t, true)), 110., "at {t}");
+        }
+        // 110 it stays under: down under what it reaches, no new try for 30 s, then a step at a
+        // time.
+        let short = Stats { avg_fps: 104., low_fps: 90., capacity_fps: 104., frames: 200, span_s: 2. };
+        assert_eq!(fps(pacer.update(&short, &p, 12.3, true)), 110.);
+        assert_eq!(fps(pacer.update(&short, &p, 13.9, true)), 95.);
+        let held = Stats { avg_fps: 94.6, low_fps: 80., capacity_fps: 94.6, frames: 200, span_s: 2. };
+        assert_eq!(fps(pacer.update(&held, &p, 20., true)), 95.);
+        assert_eq!(fps(pacer.update(&held, &p, 44., true)), 95.);
+        assert_eq!(fps(pacer.update(&held, &p, 49.1, true)), 100.);
+    }
+
+    #[test]
+    fn a_loading_screen_under_a_blind_cap_is_not_a_failed_raise() {
+        let mut p = panel(144., Vrr::Active);
+        p.vrr_range = Some((30., 144.));
+        let mut pacer = Pacer::default();
+        assert_eq!(fps(pacer.update(&steady(100.), &p, 0., true)), 90.);
+        let at =
+            |fps: f64| Stats { avg_fps: fps - 0.4, low_fps: fps * 0.8, capacity_fps: fps, frames: 200, span_s: 2. };
+        pacer.update(&at(90.), &p, 3.1, true);
+        assert_eq!(fps(pacer.update(&at(90.), &p, 8.2, true)), 110.);
+        // Right after the raise, a loading screen at 40.
+        pacer.update(&at(40.), &p, 11.3, true);
+        assert_eq!(fps(pacer.update(&at(40.), &p, 13.9, true)), 35.);
+        // Play again, held at 35: the climb goes on at once, a quarter at a time.
+        pacer.update(&at(35.), &p, 16.95, true);
+        assert_eq!(fps(pacer.update(&at(35.), &p, 22., true)), 36.);
+        pacer.update(&at(36.), &p, 25.05, true);
+        assert_eq!(fps(pacer.update(&at(36.), &p, 30.1, true)), 45.);
     }
 
     #[test]

@@ -10,6 +10,10 @@
 //! made is deleted again when the game exits or pacing is switched off; one that was there before
 //! gets its own limit back.
 //!
+//! The overlay goes into RTSS's on-screen display too, for the games RTSS is in: drawn inside the
+//! game's own frames it leaves the game's present alone, where a window over the game makes
+//! Windows compose it and turns G-SYNC off.
+//!
 //! RTSS waits inside the game's present, so PresentMon counts the wait as the frame's work: under
 //! an RTSS cap a game looks exactly as fast as the cap (see `Pacer::update`'s `blind`).
 
@@ -18,11 +22,13 @@ use std::ffi::{CString, c_char, c_void};
 use std::io;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows_sys::Win32::System::Memory::{
-    FILE_MAP_READ, MEMORY_BASIC_INFORMATION, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, VirtualQuery,
+    FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_BASIC_INFORMATION, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile,
+    VirtualQuery,
 };
 
 use crate::config::{Config, RtssProfile};
@@ -33,6 +39,14 @@ const SHARED_MEMORY: &str = "RTSSSharedMemoryV2";
 /// The header's `dwSignature`, `'RTSS'` as MSVC packs it; it turns to `0xDEAD` once RTSS exits.
 const SIGNATURE: u32 = u32::from_be_bytes(*b"RTSS");
 const LIMIT: &std::ffi::CStr = c"FramerateLimit";
+/// The owner FormalPacer's OSD slot is claimed under.
+const OSD_OWNER: &[u8] = b"FormalPacer";
+/// The shared memory version with the OSD lock, `dwBusy` (2.14).
+const OSD_LOCKED_VERSION: u32 = 0x0002_000e;
+/// Offsets in RTSS_SHARED_MEMORY_OSD_ENTRY: `szOSDOwner[256]`, then `szOSDEx[4096]`.
+const OSD_OWNER_AT: usize = 256;
+const OSD_TEXT_AT: usize = 512;
+const OSD_TEXT_LEN: usize = 4096;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
@@ -63,50 +77,133 @@ pub fn state() -> Rtss {
     }
 }
 
-/// The processes RTSS is in, or `None` when RTSS is not running.
-pub fn hooked() -> Option<HashSet<u32>> {
+/// Runs `f` on a view of RTSS's shared memory and its size, or returns `None` when RTSS is not
+/// running.
+fn with_shared<T>(access: u32, f: impl FnOnce(*mut u8, usize) -> Option<T>) -> Option<T> {
     let name = wide(SHARED_MEMORY);
     // SAFETY: a NUL-terminated name; the handle is closed below.
-    let mapping = unsafe { OpenFileMappingW(FILE_MAP_READ, 0, name.as_ptr()) };
+    let mapping = unsafe { OpenFileMappingW(access, 0, name.as_ptr()) };
     if mapping.is_null() {
         return None;
     }
-    // SAFETY: a read-only view of the whole mapping, unmapped below.
-    let view = unsafe { MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0) };
-    let pids = (!view.Value.is_null()).then(|| {
-        // SAFETY: a live view, read only within the region VirtualQuery reports.
-        unsafe { pids(view.Value.cast::<u8>()) }
-    });
+    // SAFETY: a view of the whole mapping, unmapped below.
+    let view = unsafe { MapViewOfFile(mapping, access, 0, 0, 0) };
+    let base = view.Value.cast::<u8>();
+    // SAFETY: plain data, valid when zeroed.
+    let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+    let size = (!base.is_null()
+        // SAFETY: a pointer into this process's address space and a sized struct to fill.
+        && unsafe { VirtualQuery(base.cast(), &mut info, size_of::<MEMORY_BASIC_INFORMATION>()) } != 0)
+        .then_some(info.RegionSize);
+    let result = size.and_then(|size| f(base, size));
     // SAFETY: the view and handle from above, released once.
     unsafe {
-        if !view.Value.is_null() {
+        if !base.is_null() {
             UnmapViewOfFile(view);
         }
         CloseHandle(mapping);
     }
-    pids.flatten()
+    result
 }
 
-/// The `dwProcessID` of every application entry, after the header RTSSSharedMemory.h lays out:
-/// signature, version, entry size, entry array offset, entry count.
+/// Reads the `u32` at `at` in a view of `size` bytes, after checking it is inside.
 ///
 /// # Safety
-/// `base` is the start of a mapped view.
-unsafe fn pids(base: *const u8) -> Option<HashSet<u32>> {
-    // SAFETY: plain data, valid when zeroed.
-    let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
-    // SAFETY: a pointer into this process's address space and a sized struct to fill.
-    if unsafe { VirtualQuery(base.cast(), &mut info, size_of::<MEMORY_BASIC_INFORMATION>()) } == 0 {
-        return None;
+/// `base` is the start of a live view of at least `size` bytes.
+unsafe fn word(base: *const u8, size: usize, at: usize) -> Option<u32> {
+    // SAFETY: inside the view, as checked.
+    (at + 4 <= size).then(|| unsafe { base.add(at).cast::<u32>().read_unaligned() })
+}
+
+/// The processes RTSS is in, or `None` when RTSS is not running: the `dwProcessID` of every
+/// application entry, after the header RTSSSharedMemory.h lays out (signature, version, entry
+/// size, entry array offset, entry count).
+pub fn hooked() -> Option<HashSet<u32>> {
+    with_shared(FILE_MAP_READ, |base, size| {
+        // SAFETY: a live view of `size` bytes, read only through `word`.
+        let word = |at| unsafe { word(base, size, at) };
+        if word(0)? != SIGNATURE || word(4)? < 0x0002_0000 {
+            return None;
+        }
+        let (entry, offset, count) = (word(8)? as usize, word(12)? as usize, word(16)? as usize);
+        Some((0..count).filter_map(|i| word(offset + i * entry)).filter(|&pid| pid != 0).collect())
+    })
+}
+
+/// FormalPacer's lines in RTSS's on-screen display, in the games RTSS is in.
+pub struct Osd {
+    shown: bool,
+}
+
+impl Osd {
+    /// Takes down the lines a FormalPacer that did not exit cleanly left up.
+    pub fn new() -> Self {
+        write_osd(None);
+        Self { shown: false }
     }
-    let size = info.RegionSize;
-    // SAFETY: only offsets inside the mapped region are read.
-    let word = |at: usize| (at + 4 <= size).then(|| unsafe { base.add(at).cast::<u32>().read_unaligned() });
-    if word(0)? != SIGNATURE || word(4)? < 0x0002_0000 {
-        return None;
+
+    pub fn show(&mut self, text: Option<&str>) {
+        match text {
+            Some(text) => self.shown |= write_osd(Some(text)),
+            None if self.shown => self.shown = !write_osd(None),
+            None => {}
+        }
     }
-    let (entry, offset, count) = (word(8)? as usize, word(12)? as usize, word(16)? as usize);
-    Some((0..count).filter_map(|i| word(offset + i * entry)).filter(|&pid| pid != 0).collect())
+}
+
+impl Drop for Osd {
+    fn drop(&mut self) {
+        self.show(None);
+    }
+}
+
+/// Writes `text` into FormalPacer's OSD slot, claiming a free one first, or empties the slot for
+/// `None`, the way RTSS's SDK sample does. Slot 0 is left to Afterburner and its kind. Returns
+/// whether it was done: RTSS may hold the OSD while it draws, and then the next tick tries again.
+fn write_osd(text: Option<&str>) -> bool {
+    with_shared(FILE_MAP_READ | FILE_MAP_WRITE, |base, size| {
+        // SAFETY: a live view of `size` bytes; every offset below is checked against it.
+        unsafe {
+            let word = |at| word(base, size, at);
+            if word(0)? != SIGNATURE || word(4)? < OSD_LOCKED_VERSION {
+                return None;
+            }
+            let (entry, offset, count) = (word(20)? as usize, word(24)? as usize, word(28)? as usize);
+            if entry < OSD_TEXT_AT + OSD_TEXT_LEN || offset + count * entry > size {
+                return None;
+            }
+            let slot = |i: usize| base.add(offset + i * entry);
+            let owner = |i: usize| {
+                let field = std::slice::from_raw_parts(slot(i).add(OSD_OWNER_AT), OSD_TEXT_AT - OSD_OWNER_AT);
+                field.split(|&c| c == 0).next().unwrap_or(field)
+            };
+            let frame = AtomicU32::from_ptr(base.add(32).cast());
+            let owned = (1..count).find(|&i| owner(i) == OSD_OWNER);
+            let Some(text) = text else {
+                if let Some(i) = owned {
+                    slot(i).write_bytes(0, entry);
+                    frame.fetch_add(1, Ordering::SeqCst);
+                }
+                return Some(());
+            };
+            let i = owned.or_else(|| (1..count).find(|&i| owner(i).is_empty()))?;
+            let busy = AtomicI32::from_ptr(base.add(36).cast());
+            if busy.fetch_or(1, Ordering::SeqCst) & 1 != 0 {
+                return None;
+            }
+            let owner_field = slot(i).add(OSD_OWNER_AT);
+            owner_field.copy_from_nonoverlapping(OSD_OWNER.as_ptr(), OSD_OWNER.len());
+            owner_field.add(OSD_OWNER.len()).write(0);
+            let len = text.len().min(OSD_TEXT_LEN - 1);
+            let text_field = slot(i).add(OSD_TEXT_AT);
+            text_field.copy_from_nonoverlapping(text.as_ptr(), len);
+            text_field.add(len).write(0);
+            busy.fetch_and(!1, Ordering::SeqCst);
+            frame.fetch_add(1, Ordering::SeqCst);
+            Some(())
+        }
+    })
+    .is_some()
 }
 
 type ProfileCall = unsafe extern "C" fn(*const c_char);
