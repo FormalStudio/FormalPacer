@@ -23,7 +23,9 @@ if (-not (Test-Path $presentmon) -or (Get-FileHash $presentmon).Hash -ne $presen
 $dir = Join-Path $env:LOCALAPPDATA "Programs\FormalPacer"
 New-Item -ItemType Directory -Force $dir | Out-Null
 # Stop-Process returns before the process is gone, and its executable stays locked until then.
-$running = Get-Process formalpacer -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "$dir\formalpacer.exe" }
+# PresentMon goes too: stopping FormalPacer does not stop the PresentMon it started.
+$running = Get-Process formalpacer, PresentMon -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -in "$dir\formalpacer.exe", "$dir\PresentMon.exe" }
 $running | Stop-Process
 $running | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
 # A file still loaded somewhere (the layer or the hook in a running program, the executable while

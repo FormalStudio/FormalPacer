@@ -113,6 +113,8 @@ that runs under a kernel anti-cheat.
   a game that holds the cap for five seconds gets one about a quarter higher (a step at a time
   once a raise has failed, with the waits above), and one that stays under it for longer than a
   hitch lasts is capped 8% under what it reaches, so it runs with room to spare like any other.
+  A drop far under the cap (a loading screen) does not have to be climbed back out of: once the
+  game holds the lower cap, the one from before the drop comes back at once.
   The overlay goes into RTSS's on-screen display, drawn inside the game's own frames.
 - Without RTSS, the cap goes to the NVIDIA driver's frame rate limiter in the game's driver
   profile (Max Frame Rate in the NVIDIA app). The driver reads the profile when a game starts, so a cap

@@ -24,6 +24,11 @@
 //! able to run far faster than it can. A raise that has to be taken back within ten seconds marks
 //! the game as such: from then on the cap rises one step at a time, and after a failed step it
 //! waits 30 seconds before trying again, doubling up to five minutes.
+//!
+//! Under a blind cap a game that drops far under it (a loading screen, the lobby, a heavy scene)
+//! is capped under what it reaches there, and the cap it had is remembered: once the game holds
+//! the lower cap, it goes straight back to the old one rather than climbing, and a game still in
+//! that scene tries again after 5 seconds, doubling. The drop starts the raise history over.
 
 use formalpacer_shm::Sample;
 
@@ -206,6 +211,11 @@ pub struct Pacer {
     /// No raise before this time, after a failed one.
     blocked_until: f64,
     backoff_s: f64,
+    /// Under a blind cap, the cap held before the game dropped far under it, until the game
+    /// holds that rate again.
+    scene_from: Option<f64>,
+    /// How long to wait before the next try back up to `scene_from`, after a failed one.
+    scene_wait_s: f64,
 }
 
 impl Pacer {
@@ -228,11 +238,15 @@ impl Pacer {
             Some(current) if blind => {
                 let short = stats.avg_fps < current.fps * LOWER_AT;
                 let wanted = if !short {
-                    // A quarter up at a time, until a raise fails and the raises go a step at a time.
-                    plan_budget(current.fps * 1.25, display)
-                        .filter(|c| c.fps > current.fps + 0.01)
-                        .or_else(|| next_step(current, display))
-                        .or(Some(current))
+                    match self.scene_from.filter(|from| *from > current.fps + 0.01) {
+                        Some(from) => plan_budget(from, display),
+                        // A quarter up at a time, until a raise fails and the raises go a step at
+                        // a time.
+                        None => plan_budget(current.fps * 1.25, display)
+                            .filter(|c| c.fps > current.fps + 0.01)
+                            .or_else(|| next_step(current, display))
+                            .or(Some(current)),
+                    }
                 } else {
                     plan(stats.avg_fps, display)
                 };
@@ -252,6 +266,7 @@ impl Pacer {
         if self.raised_at.is_some_and(|t| now_s - t > FAILED_WITHIN_S) {
             self.raised_at = None;
             self.backoff_s = BACKOFF_START_S;
+            self.scene_from = self.scene_from.filter(|from| *from > current.fps + 0.01);
         }
         if !self.fits(current, display) {
             self.adopt(wanted);
@@ -259,13 +274,24 @@ impl Pacer {
             self.short_ticks += 1;
             let since = *self.short_since.get_or_insert(now_s);
             if self.short_ticks >= 2 && (!blind || now_s - since >= BLIND_SHORT_S) {
-                let failed =
-                    self.raised_at.take().is_some() && (!blind || stats.avg_fps >= self.raised_from * BLIND_SCENE);
-                if failed {
+                let raised = self.raised_at.take().is_some();
+                if raised && self.scene_from.is_some_and(|from| from >= current.fps - 0.01) {
+                    // The way back up to the old cap: the scene has not ended yet.
+                    self.scene_wait_s = (self.scene_wait_s * 2.).clamp(RAISE_AFTER_S, BACKOFF_MAX_S);
+                    self.blocked_until = now_s + self.scene_wait_s;
+                } else if raised && (!blind || stats.avg_fps >= self.raised_from * BLIND_SCENE) {
                     self.stepping = true;
                     let backoff = if self.backoff_s > 0. { self.backoff_s } else { BACKOFF_START_S };
                     self.blocked_until = now_s + backoff;
                     self.backoff_s = (backoff * 2.).min(BACKOFF_MAX_S);
+                } else if blind && stats.avg_fps < current.fps * BLIND_SCENE {
+                    // Right after a raise, the cap the game last held is the one before it.
+                    let held = if raised { self.raised_from } else { current.fps };
+                    self.scene_from = Some(self.scene_from.map_or(held, |from| from.max(held)));
+                    self.scene_wait_s = 0.;
+                    self.stepping = false;
+                    self.blocked_until = 0.;
+                    self.backoff_s = 0.;
                 }
                 self.adopt(wanted);
             }
@@ -273,7 +299,9 @@ impl Pacer {
             self.short_ticks = 0;
             self.short_since = None;
             let since = *self.higher_since.get_or_insert(now_s);
-            if now_s - since >= RAISE_AFTER_S {
+            // Back to the cap from before a drop at once: the game has shown it holds that rate.
+            let back = self.scene_from.is_some_and(|from| from > current.fps + 0.01);
+            if back || now_s - since >= RAISE_AFTER_S {
                 let raise = if self.stepping { next_step(current, display) } else { wanted };
                 self.adopt(raise);
                 self.raised_at = Some(now_s);
@@ -447,11 +475,40 @@ mod tests {
         // Right after the raise, a loading screen at 40.
         pacer.update(&at(40.), &p, 11.3, true);
         assert_eq!(fps(pacer.update(&at(40.), &p, 13.9, true)), 35.);
-        // Play again, held at 35: the climb goes on at once, a quarter at a time.
-        pacer.update(&at(35.), &p, 16.95, true);
-        assert_eq!(fps(pacer.update(&at(35.), &p, 22., true)), 36.);
-        pacer.update(&at(36.), &p, 25.05, true);
-        assert_eq!(fps(pacer.update(&at(36.), &p, 30.1, true)), 45.);
+        // Play again, held at 35: straight back to 90, the cap it held before the raise, and
+        // from there a quarter up at a time.
+        assert_eq!(fps(pacer.update(&at(35.), &p, 16.95, true)), 90.);
+        pacer.update(&at(90.), &p, 20.05, true);
+        assert_eq!(fps(pacer.update(&at(90.), &p, 25.1, true)), 110.);
+    }
+
+    #[test]
+    fn a_lobby_after_a_loading_screen_gets_its_cap_back_at_once() {
+        let p = panel(144., Vrr::Off);
+        let mut pacer = Pacer::default();
+        let at =
+            |fps: f64| Stats { avg_fps: fps - 0.4, low_fps: fps * 0.8, capacity_fps: fps, frames: 200, span_s: 2. };
+        // A lobby at 120 on a fixed 144 Hz panel: 144 is tried and fails, 72 holds, and the raises
+        // now wait 30 s and go a step at a time.
+        assert_eq!(fps(pacer.update(&steady(130.), &p, 0., true)), 72.);
+        pacer.update(&at(72.), &p, 3.1, true);
+        assert_eq!(fps(pacer.update(&at(72.), &p, 8.2, true)), 144.);
+        pacer.update(&at(120.), &p, 11.3, true);
+        assert_eq!(fps(pacer.update(&at(120.), &p, 13.9, true)), 72.);
+        // A loading screen at 28 takes the cap to 24.
+        pacer.update(&at(28.), &p, 20., true);
+        assert_eq!(fps(pacer.update(&at(28.), &p, 22.6, true)), 24.);
+        // Still loading once 24 holds: 72 is tried, and taken back.
+        assert_eq!(fps(pacer.update(&at(24.), &p, 25.7, true)), 72.);
+        pacer.update(&at(28.), &p, 28.8, true);
+        assert_eq!(fps(pacer.update(&at(28.), &p, 31.4, true)), 24.);
+        // Five seconds on, the lobby is back at 120: so is the cap, without the 30 s wait or a
+        // climb through 28.8, 36 and 48.
+        assert_eq!(fps(pacer.update(&at(24.), &p, 34.5, true)), 24.);
+        assert_eq!(fps(pacer.update(&at(24.), &p, 36.5, true)), 72.);
+        // The drop started the raise history over: 144 gets a fresh try five seconds on.
+        assert_eq!(fps(pacer.update(&at(72.), &p, 39.6, true)), 72.);
+        assert_eq!(fps(pacer.update(&at(72.), &p, 44.7, true)), 144.);
     }
 
     #[test]
