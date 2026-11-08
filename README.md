@@ -77,7 +77,8 @@ game's display with the rate the display refreshes at, over a graph of the newes
 With VRR running the display refreshes once per frame, and a frame under the bottom of the VRR
 window twice or more (`VRR 115HZ`). On Windows the NVIDIA driver says whether it is running right
 now: a game Windows composes, under a window or Discord's overlay, is on fixed refresh however
-G-SYNC is set (`VRR OFF 144HZ`). The graph is centred on the cap's
+G-SYNC is set (`VRR OFF 144HZ`), and the cap is planned for fixed refresh until VRR runs again.
+The graph is centred on the cap's
 interval: a game paced evenly draws a flat line through the middle, and a frame that took a
 quarter longer or more shows red. It is drawn into the game's own frames, so it shows up in fullscreen, in
 screenshots and in recordings. Right Shift + F10 toggles it in game (through the X server, so

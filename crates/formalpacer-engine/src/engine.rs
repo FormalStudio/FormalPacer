@@ -2,6 +2,7 @@
 //! PresentMon sees presenting), keeps each one's cap, and sends the app a snapshot whenever what it
 //! would show changes. It runs whether or not a window is open, so pacing goes on from the tray.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -435,7 +436,7 @@ impl Engine {
                         session.display = display.connector.clone();
                     }
                     if settled {
-                        session.pacer.update(&session.stats, display, now_s, blind)
+                        session.pacer.update(&session.stats, &as_running(display), now_s, blind)
                     } else {
                         session.pacer.cap
                     }
@@ -749,24 +750,27 @@ pub fn pick_display<'a>(
         })
 }
 
-/// The overlay's word on `display`: its refresh rate and VRR floor, and whether VRR is on, or
-/// where the driver says, whether it runs now. A game composed by Windows (a window over it, an
-/// overlay such as Discord's) is on fixed refresh though G-SYNC is turned on.
+/// `display` as the game in front has it. G-SYNC turned on runs only while the game presents
+/// on its own: a game Windows composes (a window over it, an overlay such as Discord's, often
+/// after an alt-tab) is on fixed refresh, where vsync holds a cap between two fractions of the
+/// refresh rate to the lower one, and the game looks short of every cap the plan could give.
+fn as_running(display: &Display) -> Cow<'_, Display> {
+    #[cfg(windows)]
+    if display.vrr_active()
+        && crate::nvidia::vrr(&format!("\\\\.\\{}", display.connector)).is_some_and(|v| !v.running)
+    {
+        return Cow::Owned(Display { vrr: Vrr::Off, ..display.clone() });
+    }
+    Cow::Borrowed(display)
+}
+
+/// The overlay's word on `display`: its refresh rate and VRR floor, and whether VRR runs.
 fn overlay_for(display: Option<&Display>, show: bool) -> Overlay {
-    let vrr = match vrr_state(display) {
-        #[cfg(windows)]
-        VrrState::On
-            if display.is_some_and(|d| {
-                crate::nvidia::vrr(&format!("\\\\.\\{}", d.connector)).is_some_and(|v| !v.running)
-            }) =>
-        {
-            VrrState::Off
-        }
-        vrr => vrr,
-    };
+    let display = display.map(as_running);
+    let display = display.as_deref();
     Overlay {
         show,
-        vrr,
+        vrr: vrr_state(display),
         refresh_hz: display.map_or(0, |d| d.refresh_hz.round() as u16),
         vrr_min_hz: display.and_then(|d| d.vrr_range).map_or(0, |(min, _)| min.ceil() as u16),
     }
