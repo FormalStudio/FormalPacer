@@ -66,7 +66,8 @@ Pacing is only right for the display the game is on. The app asks, in order:
 
 The window shows which of these decided it. VRR state is the kernel's `VRR_ENABLED` on the
 display's CRTC, so "On" means VRR is running right now, not that it is allowed. The VRR range
-comes from the monitor's EDID.
+comes from the monitor's EDID: its HDMI 2.1 VRR or FreeSync block when it has one, since the
+general range limits can reach far under the VRR window.
 
 ## Overlay
 
@@ -141,7 +142,9 @@ A game is anything presenting from where the stores install games (Steam, Epic, 
 EA, Ubisoft, Battle.net), apart from their launchers and tools such as Wallpaper Engine, or
 anything whose own window is in the foreground and covers its monitor. Steam and Epic games show
 their store name. Displays come from the Windows display configuration (exact refresh rate, the
-EDID's VRR range) and G-SYNC state from the NVIDIA driver.
+EDID's VRR range) and G-SYNC state from the NVIDIA driver. The driver can
+report G-SYNC on another of its displays than the one it runs on (seen after a reboot renumbered
+the displays), so G-SYNC on for one display counts for every display with a VRR window.
 
 Reading frame times from outside needs an administrator or a member of Performance Log Users.
 FormalPacer runs as the user, so the window offers to add you to the group: one consent prompt,

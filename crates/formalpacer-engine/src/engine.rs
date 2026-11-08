@@ -439,7 +439,7 @@ impl Engine {
                     }
                     // G-SYNC stops for a moment whenever something draws over the game (a
                     // notification, a popup): the plan follows it once it stays off.
-                    let running = as_running(display);
+                    let running = as_running(display, &self.displays);
                     if running.vrr == display.vrr {
                         session.composed_since = None;
                     }
@@ -460,7 +460,7 @@ impl Engine {
             match &mut session.feed {
                 Feed::Page(page) => {
                     page.set_target(cap.map_or(0, |c| c.interval_ns()), now);
-                    page.set_overlay(overlay_for(target.map(|(d, _)| d), self.config.overlay));
+                    page.set_overlay(overlay_for(target.map(|(d, _)| d), &self.displays, self.config.overlay));
                 }
                 #[cfg(windows)]
                 Feed::Measured { driver, rtss, live, foreground: seen, pid } => {
@@ -503,7 +503,7 @@ impl Engine {
                 } else {
                     driver.running()
                 };
-                let shown = overlay_for(display, true);
+                let shown = overlay_for(display, &self.displays, true);
                 let text = formalpacer_hook::overlay::Text {
                     fps: s.stats.avg_fps.round() as u32,
                     cap: cap.unwrap_or(0),
@@ -765,18 +765,24 @@ pub fn pick_display<'a>(
 /// on its own: a game Windows composes (a window over it, an overlay such as Discord's, often
 /// after an alt-tab) is on fixed refresh, where vsync holds a cap between two fractions of the
 /// refresh rate to the lower one, and the game looks short of every cap the plan could give.
-fn as_running(display: &Display) -> Cow<'_, Display> {
+/// The driver's flags can sit on another of its displays (see `display::windows`), so G-SYNC
+/// counts as running when it runs on any of them.
+#[cfg_attr(not(windows), allow(unused_variables))]
+fn as_running<'a>(display: &'a Display, displays: &[Display]) -> Cow<'a, Display> {
     #[cfg(windows)]
-    if display.vrr_active() && crate::nvidia::vrr(&format!("\\\\.\\{}", display.connector)).is_some_and(|v| !v.running)
-    {
-        return Cow::Owned(Display { vrr: Vrr::Off, ..display.clone() });
+    if display.vrr_active() {
+        let states: Vec<_> =
+            displays.iter().filter_map(|d| crate::nvidia::vrr(&format!("\\\\.\\{}", d.connector))).collect();
+        if !states.is_empty() && !states.iter().any(|v| v.running) {
+            return Cow::Owned(Display { vrr: Vrr::Off, ..display.clone() });
+        }
     }
     Cow::Borrowed(display)
 }
 
 /// The overlay's word on `display`: its refresh rate and VRR floor, and whether VRR runs.
-fn overlay_for(display: Option<&Display>, show: bool) -> Overlay {
-    let display = display.map(as_running);
+fn overlay_for(display: Option<&Display>, displays: &[Display], show: bool) -> Overlay {
+    let display = display.map(|d| as_running(d, displays));
     let display = display.as_deref();
     Overlay {
         show,

@@ -27,6 +27,11 @@ fn from_wide(s: &[u16]) -> String {
 
 pub fn probe() -> Vec<Display> {
     let (paths, modes) = active_paths();
+    // The driver can report G-SYNC on another of its displays than the one it runs on: after a
+    // reboot renumbered the displays, the flags followed the number to a portable panel while the
+    // one G-SYNC ran on read all clear. G-SYNC on for any display, then, is on for every one
+    // whose EDID has a VRR window.
+    let gsync_on = paths.iter().filter_map(source_name).filter_map(|s| nvidia::vrr(&s)).any(|v| v.enabled);
     paths
         .iter()
         .filter_map(|path| {
@@ -44,6 +49,7 @@ pub fn probe() -> Vec<Display> {
             let vrr_range = edid_vrr_range(&edid);
             let vrr = match nvidia::vrr(&source) {
                 Some(state) if state.enabled => Vrr::Active,
+                Some(_) if gsync_on && vrr_range.is_some() => Vrr::Active,
                 Some(state) if state.possible => Vrr::Off,
                 Some(_) => Vrr::Unsupported,
                 // Another vendor's driver, or a panel the NVIDIA GPU does not drive: the EDID says
