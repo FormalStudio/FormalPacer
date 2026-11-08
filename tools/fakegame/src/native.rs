@@ -95,7 +95,12 @@ impl Native {
                     let factory: IDXGIFactory2 = CreateDXGIFactory1()?;
                     let swapchain =
                         factory.CreateSwapChainForHwnd(&device, hwnd, &swapchain_desc(width, height), None, None)?;
-                    Ok(Self::D3d11 { device, context: context.context("no context")?, swapchain, size: (width, height) })
+                    Ok(Self::D3d11 {
+                        device,
+                        context: context.context("no context")?,
+                        swapchain,
+                        size: (width, height),
+                    })
                 }
                 Api::D3d12 => {
                     let mut device: Option<ID3D12Device> = None;
@@ -115,7 +120,9 @@ impl Native {
                         ..Default::default()
                     })?;
                     let allocators = (0..BUFFERS)
-                        .map(|_| device.CreateCommandAllocator::<ID3D12CommandAllocator>(D3D12_COMMAND_LIST_TYPE_DIRECT))
+                        .map(|_| {
+                            device.CreateCommandAllocator::<ID3D12CommandAllocator>(D3D12_COMMAND_LIST_TYPE_DIRECT)
+                        })
                         .collect::<windows::core::Result<Vec<_>>>()?;
                     let list: ID3D12GraphicsCommandList =
                         device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocators[0], None)?;
@@ -189,7 +196,11 @@ impl Native {
     }
 }
 
-fn transition(resource: &ID3D12Resource, before: D3D12_RESOURCE_STATES, after: D3D12_RESOURCE_STATES) -> D3D12_RESOURCE_BARRIER {
+fn transition(
+    resource: &ID3D12Resource,
+    before: D3D12_RESOURCE_STATES,
+    after: D3D12_RESOURCE_STATES,
+) -> D3D12_RESOURCE_BARRIER {
     D3D12_RESOURCE_BARRIER {
         Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
         Anonymous: D3D12_RESOURCE_BARRIER_0 {
@@ -232,9 +243,17 @@ impl D3d12 {
                 ptr: self.heap.GetCPUDescriptorHandleForHeapStart().ptr + index * self.rtv_size,
             };
             self.device.CreateRenderTargetView(&buffer, None, view);
-            self.list.ResourceBarrier(&[transition(&buffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET)]);
+            self.list.ResourceBarrier(&[transition(
+                &buffer,
+                D3D12_RESOURCE_STATE_PRESENT,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+            )]);
             self.list.ClearRenderTargetView(view, &color, None);
-            self.list.ResourceBarrier(&[transition(&buffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT)]);
+            self.list.ResourceBarrier(&[transition(
+                &buffer,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_PRESENT,
+            )]);
             self.list.Close()?;
             self.queue.ExecuteCommandLists(&[Some(self.list.cast::<ID3D12CommandList>()?)]);
             self.swapchain.Present(0, DXGI_PRESENT(0)).ok()?;

@@ -55,7 +55,9 @@ pub fn inject(pid: u32, dll: &std::path::Path) -> std::io::Result<()> {
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
     use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-    use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAllocEx, VirtualFreeEx};
+    use windows_sys::Win32::System::Memory::{
+        MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAllocEx, VirtualFreeEx,
+    };
     use windows_sys::Win32::System::SystemInformation::IMAGE_FILE_MACHINE_UNKNOWN;
     use windows_sys::Win32::System::Threading::{
         CreateRemoteThread, IsWow64Process2, OpenProcess, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION,
@@ -91,7 +93,8 @@ pub fn inject(pid: u32, dll: &std::path::Path) -> std::io::Result<()> {
                 return Err(Error::last_os_error());
             }
             let written = WriteProcessMemory(process, remote, path.as_ptr().cast(), bytes, std::ptr::null_mut()) != 0;
-            let load = GetProcAddress(GetModuleHandleW(windows_sys::w!("kernel32.dll")), windows_sys::s!("LoadLibraryW"));
+            let load =
+                GetProcAddress(GetModuleHandleW(windows_sys::w!("kernel32.dll")), windows_sys::s!("LoadLibraryW"));
             let thread = match (written, load) {
                 (true, Some(load)) => CreateRemoteThread(
                     process,

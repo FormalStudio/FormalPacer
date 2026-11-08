@@ -44,6 +44,9 @@ const HITCH_US: u32 = 250_000;
 const VRR_FALLBACK_MIN: f64 = 48.0;
 /// Snap to a refresh fraction under VRR only when it costs at most this share of the free rate.
 const SNAP_TOLERANCE: f64 = 0.90;
+/// A game whose slowest 1% of frames and its work both stay within this of its average holds
+/// that rate by itself.
+const STEADY: f64 = 0.95;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CapKind {
@@ -114,11 +117,21 @@ fn percentile(values: &mut [u32], p: f64) -> u32 {
 }
 
 /// What the game can sustain. A game locked to the refresh rate by vsync spends the rest of each
-/// frame blocked in present, which reads as work; it can do at least the refresh rate.
+/// frame blocked in present, which reads as work; it can do at least the refresh rate. The same
+/// goes for a game holding a steady rate of its own (its own limiter, or the driver's) with
+/// nothing left to spare: the wait is in its work, so it can do at least that rate, and keeping
+/// headroom under it would cap it below a rate it already holds evenly.
 pub fn capacity(stats: &Stats, refresh_hz: f64) -> f64 {
     let vsync_locked =
         (stats.avg_fps - refresh_hz).abs() <= refresh_hz * 0.01 && stats.capacity_fps >= refresh_hz * 0.95;
-    if vsync_locked { stats.capacity_fps.max(refresh_hz / HEADROOM) } else { stats.capacity_fps }
+    let self_limited = stats.low_fps >= stats.avg_fps * STEADY && stats.capacity_fps <= stats.avg_fps / STEADY;
+    if vsync_locked {
+        stats.capacity_fps.max(refresh_hz / HEADROOM)
+    } else if self_limited {
+        stats.capacity_fps.max(stats.avg_fps.round() / HEADROOM)
+    } else {
+        stats.capacity_fps
+    }
 }
 
 /// The best cap for a game that sustains `capacity_fps` on `display`. `None` when the game is
@@ -138,7 +151,8 @@ fn plan_budget(budget: f64, display: &Display) -> Option<Cap> {
         }
         let floor = vrr_min.ceil().max(MIN_FPS);
         if budget >= floor {
-            let steady = ((budget / 5.).floor() * 5.).max(floor);
+            // The small margin keeps a budget that is a multiple of 5 in float error on its step.
+            let steady = (((budget + 1e-6) / 5.).floor() * 5.).max(floor);
             let snapped = fraction(refresh, steady).filter(|c| c.fps >= steady * SNAP_TOLERANCE && c.fps >= floor);
             return Some(snapped.unwrap_or(Cap { fps: steady, kind: CapKind::VrrSteady }));
         }
@@ -306,8 +320,9 @@ mod tests {
         assert_eq!(fps(plan(60., &p)), 47.99);
     }
 
+    /// An uncapped game at `capacity`, with the spread of frame times an uncapped game has.
     fn steady(capacity: f64) -> Stats {
-        Stats { avg_fps: capacity, low_fps: capacity, capacity_fps: capacity, frames: 200, span_s: 2. }
+        Stats { avg_fps: capacity, low_fps: capacity * 0.9, capacity_fps: capacity, frames: 200, span_s: 2. }
     }
 
     #[test]
@@ -366,6 +381,27 @@ mod tests {
         assert_eq!(fps(pacer.update(&locked, &p, 0.)), 144.);
         assert_eq!(fps(pacer.update(&locked, &p, 0.25)), 144.);
         assert_eq!(fps(pacer.update(&locked, &p, 0.5)), 144.);
+    }
+
+    #[test]
+    fn a_game_holding_its_own_rate_is_not_capped_under_it() {
+        let mut p = panel(144., Vrr::Active);
+        p.vrr_range = Some((30., 144.));
+        // A menu held at 120 by the game's own limiter: every frame's wait is in its work.
+        let own = Stats { avg_fps: 119.9, low_fps: 117., capacity_fps: 118.5, frames: 240, span_s: 2. };
+        assert_eq!(fps(plan(capacity(&own, 144.), &p)), 120.);
+        let own = Stats { avg_fps: 59.94, low_fps: 59., capacity_fps: 59.5, frames: 120, span_s: 2. };
+        assert_eq!(fps(plan(capacity(&own, 144.), &p)), 60.);
+        let mut pacer = Pacer::default();
+        for t in [0., 0.25, 0.5, 10., 20.] {
+            assert_eq!(fps(pacer.update(&own, &p, t)), 60., "at {t}");
+        }
+        // Uneven frames are not a limiter: the headroom stays.
+        let rough = Stats { avg_fps: 120., low_fps: 80., capacity_fps: 110., frames: 240, span_s: 2. };
+        assert_eq!(fps(plan(capacity(&rough, 144.), &p)), 100.);
+        // Under FormalPacer's own cap the work shows the room to spare, which the plan uses as is.
+        let capped = Stats { avg_fps: 90., low_fps: 89., capacity_fps: 140., frames: 180, span_s: 2. };
+        assert_eq!(capacity(&capped, 144.), 140.);
     }
 
     #[test]

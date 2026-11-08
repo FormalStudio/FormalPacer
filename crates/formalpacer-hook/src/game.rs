@@ -67,13 +67,25 @@ fn protected() -> bool {
     false
 }
 
+#[cfg(windows)]
+fn hookable() -> bool {
+    std::env::current_exe().is_ok_and(|exe| library::may_hook(&exe))
+}
+
+#[cfg(not(windows))]
+fn hookable() -> bool {
+    true
+}
+
 /// For a hook that is only ever loaded on purpose (the OpenGL hook goes in through
-/// `formalpacer run`), every process is a game except the known tools and `FORMALPACER=0`.
+/// `formalpacer run`, the Windows hook from the app), every process is a game except the known
+/// tools and `FORMALPACER=0`. On Windows the hook checks the app's judgement again, as it does
+/// for anti-cheats.
 pub fn detect_injected() -> Option<Game> {
     let name = process_name();
     let off = std::env::var("FORMALPACER").is_ok_and(|v| v == "0")
         || NOT_GAMES.contains(&name.to_ascii_lowercase().as_str())
-        || protected();
+        || !hookable();
     let steam_app_id = ["SteamGameId", "SteamAppId", "STEAM_COMPAT_APP_ID"]
         .iter()
         .find_map(|k| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok()))

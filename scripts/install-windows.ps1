@@ -23,6 +23,15 @@ if (-not (Test-Path $presentmon) -or (Get-FileHash $presentmon).Hash -ne $presen
 $dir = Join-Path $env:LOCALAPPDATA "Programs\FormalPacer"
 New-Item -ItemType Directory -Force $dir | Out-Null
 Get-Process formalpacer -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "$dir\formalpacer.exe" } | Stop-Process
+# The layer or the hook still loaded in a running program cannot be replaced, but it can be moved
+# aside; the old copy is deleted on a later install, once nothing has it loaded.
+Get-ChildItem $dir -Filter *.old | Remove-Item -ErrorAction SilentlyContinue
+foreach ($file in "formalpacer_layer.dll", "formalpacer_inject.dll") {
+    $target = Join-Path $dir $file
+    if (Test-Path $target) {
+        try { Remove-Item $target } catch { Move-Item $target "$target.$(Get-Date -Format yyyyMMddHHmmss).old" }
+    }
+}
 Copy-Item target\release\formalpacer.exe, target\release\formalpacer_layer.dll, target\release\formalpacer_inject.dll, $presentmon $dir -Force
 
 $manifestDir = Join-Path $env:LOCALAPPDATA "FormalPacer"

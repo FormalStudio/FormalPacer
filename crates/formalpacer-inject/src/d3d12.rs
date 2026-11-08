@@ -16,12 +16,12 @@ use windows::core::w;
 
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12CreateDevice, D3D12_DESCRIPTOR_HEAP_DESC,
+    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC,
     D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_FENCE_FLAG_NONE, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
     D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
     D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATES,
-    D3D12_RESOURCE_TRANSITION_BARRIER, ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue,
-    ID3D12DescriptorHeap, ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12Resource,
+    D3D12_RESOURCE_TRANSITION_BARRIER, D3D12CreateDevice, ID3D12CommandAllocator, ID3D12CommandList,
+    ID3D12CommandQueue, ID3D12DescriptorHeap, ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12Resource,
 };
 use windows::Win32::Graphics::Dxgi::{IDXGISwapChain, IDXGISwapChain3};
 use windows::core::{Interface, Result};
@@ -110,7 +110,17 @@ impl Renderer {
                 device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocators[0], None)?;
             list.Close()?;
             let fence = device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
-            Ok(Self { queue, device, heap, rtv_size, used: vec![0; allocators.len()], allocators, list, fence, signalled: 0 })
+            Ok(Self {
+                queue,
+                device,
+                heap,
+                rtv_size,
+                used: vec![0; allocators.len()],
+                allocators,
+                list,
+                fence,
+                signalled: 0,
+            })
         }
     }
 
@@ -136,7 +146,11 @@ impl Renderer {
             let start = self.heap.GetCPUDescriptorHandleForHeapStart();
             let view = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: start.ptr + index * self.rtv_size };
             self.device.CreateRenderTargetView(&buffer, None, view);
-            self.list.ResourceBarrier(&[transition(&buffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET)]);
+            self.list.ResourceBarrier(&[transition(
+                &buffer,
+                D3D12_RESOURCE_STATE_PRESENT,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+            )]);
             // One rectangle per clear: NVIDIA's driver fails fast on a clear of the overlay's
             // hundred-odd rectangles at once.
             for (color, rects) in crate::dxgi::rects(frame) {
@@ -144,7 +158,11 @@ impl Renderer {
                     self.list.ClearRenderTargetView(view, &color, Some(&[rect]));
                 }
             }
-            self.list.ResourceBarrier(&[transition(&buffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT)]);
+            self.list.ResourceBarrier(&[transition(
+                &buffer,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_PRESENT,
+            )]);
             self.list.Close()?;
             self.queue.ExecuteCommandLists(&[Some(self.list.cast::<ID3D12CommandList>()?)]);
             self.signalled += 1;

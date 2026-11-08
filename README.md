@@ -41,8 +41,9 @@ The planner takes the 95th percentile of the game's own frame time over the last
 
 The cap drops as soon as the game can no longer hold it and only rises after the game has held
 the higher rate for five seconds, so it never hunts. A game locked to the refresh rate by vsync
-is recognised as such and not mistaken for a slow one. Loading screens and alt-tab gaps are left
-out of the numbers.
+is recognised as such and not mistaken for a slow one, and so is a game holding an even rate of
+its own (its own limiter, or the driver's): it is capped at that rate, not 8% under it. Loading
+screens and alt-tab gaps are left out of the numbers.
 
 Some engines (BeamNG, most large ones) build the next frame on other threads while the layer
 holds the present, so under a cap they look far faster than they are. When a raise has to be
@@ -100,8 +101,11 @@ that runs under a kernel anti-cheat.
   driver's frame rate limiter in the game's driver profile (Max Frame Rate in the NVIDIA app).
   Nothing is loaded into the game. The driver reads the profile when a game starts, so a cap
   planned during one run holds from the next launch, and the window says what the driver holds
-  for the run now going. Only a game that has been in the foreground gets a driver cap, and
-  switching pacing off puts back the limit each game had before.
+  for the run now going. Within a run that cap only goes up, so a menu or lobby running slower
+  than play never becomes the next run's cap. Only a game that has been in the foreground gets a driver cap, and
+  switching pacing off puts back the limit each game had before. Their overlay is a window of
+  FormalPacer's own over the game's corner, on top, unfocusable and transparent to clicks, shown
+  while the game is in front; its cap is what the driver holds for this run.
 
 RTSS and Special K hook anti-cheat games too. Anti-cheats let RTSS do that because its DLLs are
 signed and on their allow lists; an unsigned DLL in Fortnite is exactly what Easy Anti-Cheat looks
@@ -119,9 +123,12 @@ FormalPacer runs as the user, so the window offers to add you to the group: one 
 then sign out and back in. Until then a game without an anti-cheat still gets the hook once its
 window is in the foreground and fills its monitor.
 
-Not done yet on Windows: games measured from outside have no in-game overlay, and AMD and Intel
-drivers have no limiter FormalPacer can set, so there those games are measured only. The overlay
-is drawn on 8-bit and scRGB back buffers; HDR10 ones get pacing without it.
+A game's cap is planned only from frames it ran in the foreground: a game behind another window
+often slows itself down, and its cap holds until it is back.
+
+Not done yet on Windows: AMD and Intel drivers have no limiter FormalPacer can set, so there
+games measured from outside are measured only. The overlay is drawn on 8-bit and scRGB back
+buffers; HDR10 ones get pacing without it.
 
 ## Features
 

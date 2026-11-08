@@ -29,8 +29,8 @@ use std::ffi::{CStr, c_char, c_int, c_uint, c_ulong, c_void};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
-use formalpacer_hook::gl::Gl;
 use formalpacer_hook::game::{self, Game};
+use formalpacer_hook::gl::Gl;
 use formalpacer_hook::pacer;
 
 type Dlsym = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void;

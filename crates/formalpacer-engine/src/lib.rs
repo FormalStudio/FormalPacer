@@ -8,6 +8,8 @@ mod driver;
 #[cfg(windows)]
 mod elevate;
 pub mod engine;
+#[cfg(windows)]
+mod floating;
 pub mod layer;
 #[cfg(windows)]
 mod nvidia;

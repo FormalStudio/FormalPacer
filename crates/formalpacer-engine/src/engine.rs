@@ -13,7 +13,7 @@ use crate::display::{self, Display, Vrr};
 use crate::layer::{self, LayerState};
 use crate::pacing::{self, Cap, Pacer, Stats};
 #[cfg(windows)]
-use crate::{driver, presentmon};
+use crate::{driver, floating, presentmon};
 use crate::{placement, process, steam};
 
 const TICK: Duration = Duration::from_millis(250);
@@ -176,6 +176,8 @@ struct Engine {
     /// Whether the user is in Performance Log Users, checked while PresentMon is denied.
     #[cfg(windows)]
     joined: bool,
+    #[cfg(windows)]
+    floating: floating::Floating,
     notice: Option<String>,
     last: Option<Snapshot>,
 }
@@ -215,6 +217,8 @@ impl Engine {
             injected: HashMap::new(),
             #[cfg(windows)]
             joined: false,
+            #[cfg(windows)]
+            floating: floating::Floating::start(),
             notice: None,
             last: None,
         }
@@ -345,13 +349,19 @@ impl Engine {
             if let Some((_, how)) = target {
                 session.placement = how;
             }
+            // A game behind another window often slows itself down, and what it runs at then says
+            // nothing about what it can do in front: its cap holds until it is back.
+            #[cfg(windows)]
+            let in_front = pid == foreground;
+            #[cfg(not(windows))]
+            let in_front = true;
             let cap = match (self.config.mode, target.map(|(d, _)| d)) {
                 (Mode::Auto, Some(display)) => {
                     if session.display != display.connector {
                         session.pacer = Pacer::default();
                         session.display = display.connector.clone();
                     }
-                    session.pacer.update(&session.stats, display, now_s)
+                    if in_front { session.pacer.update(&session.stats, display, now_s) } else { session.pacer.cap }
                 }
                 (_, display) => {
                     session.pacer = Pacer::default();
@@ -359,12 +369,7 @@ impl Engine {
                     None
                 }
             };
-            let vrr = match target.map(|(d, _)| &d.vrr) {
-                Some(Vrr::Active) => VrrState::On,
-                Some(Vrr::Off) => VrrState::Off,
-                Some(Vrr::Unsupported) => VrrState::Unsupported,
-                None => VrrState::Unknown,
-            };
+            let vrr = vrr_state(target.map(|(d, _)| d));
             match &mut session.feed {
                 Feed::Page(page) => {
                     page.set_target(cap.map_or(0, |c| c.interval_ns()), now);
@@ -387,6 +392,23 @@ impl Engine {
             if now.saturating_sub(heartbeat) < LIVE_NS && active.is_none_or(|(_, b)| rank > b) {
                 active = Some((session, rank));
             }
+        }
+        #[cfg(windows)]
+        {
+            let shown = active.and_then(|(s, _)| {
+                let Feed::Measured { pid, driver, .. } = &s.feed else { return None };
+                if !self.config.overlay || *pid != foreground {
+                    return None;
+                }
+                let display = self.displays.iter().find(|d| d.connector == s.display);
+                let text = formalpacer_hook::overlay::Text {
+                    fps: s.stats.avg_fps.round() as u32,
+                    cap: driver.running().unwrap_or(0),
+                    vrr: vrr_state(display),
+                };
+                Some(floating::Shown { text, monitor: floating::monitor_of(*pid)? })
+            });
+            self.floating.show(shown);
         }
         Snapshot {
             config: self.config.clone(),
@@ -427,6 +449,16 @@ impl Engine {
                 continue;
             }
             match Mapping::attach(&path) {
+                // A program that is not a game, with a hook an older build let in or a layer forced
+                // on: it is left uncapped and without the overlay.
+                #[cfg(windows)]
+                Ok(page)
+                    if !process::exe_path(page.pid()).is_some_and(|exe| formalpacer_hook::library::may_hook(&exe)) =>
+                {
+                    page.set_target(0, now);
+                    page.set_overlay(Overlay { show: false, vrr: VrrState::Unknown });
+                    self.rejected.insert(key);
+                }
                 Ok(page) => {
                     let id = page.steam_app_id();
                     let name = (id != 0).then(|| steam::app_name(id)).flatten().unwrap_or_else(|| page.name());
@@ -464,7 +496,8 @@ impl Engine {
 
     /// Games PresentMon sees that no page reports: Direct3D and OpenGL games, Vulkan games
     /// without the layer, and every game under a kernel anti-cheat. A game is a process installed
-    /// where stores put games, or one whose own window is in the foreground and fills its monitor.
+    /// where stores put games, or one that ships as a game whose own window is in the foreground
+    /// and fills its monitor (a desktop, a browser or a video player fills it too).
     /// The hook goes into each one without an anti-cheat, which then reports through a page like
     /// the layer does; a game it does not reach in time is measured from outside.
     #[cfg(windows)]
@@ -487,7 +520,10 @@ impl Engine {
             }
             let Some(exe) = self.exes.entry(pid).or_insert_with(|| process::exe_path(pid)).clone() else { continue };
             let installed = library::is_game(&exe);
-            let fullscreen = pid == foreground && !library::not_a_game(&exe) && crate::window::fills_monitor(pid);
+            let fullscreen = pid == foreground
+                && !library::not_a_game(&exe)
+                && crate::window::fills_monitor(pid)
+                && library::has_engine_files(&exe);
             if !installed && !fullscreen {
                 continue;
             }
@@ -576,6 +612,15 @@ pub fn pick_display<'a>(
         .or_else(|| {
             displays.iter().max_by(|a, b| a.refresh_hz.total_cmp(&b.refresh_hz)).map(|d| (d, Placement::Fastest))
         })
+}
+
+fn vrr_state(display: Option<&Display>) -> VrrState {
+    match display.map(|d| &d.vrr) {
+        Some(Vrr::Active) => VrrState::On,
+        Some(Vrr::Off) => VrrState::Off,
+        Some(Vrr::Unsupported) => VrrState::Unsupported,
+        None => VrrState::Unknown,
+    }
 }
 
 /// Stats to a tenth of a frame, so the app is not woken for noise.

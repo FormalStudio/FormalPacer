@@ -71,15 +71,11 @@ pub fn outside(snapshot: &Snapshot) -> Option<&'static str> {
         Outside::Denied => Some(
             "Anti-cheat games aren't measured: Windows only lets administrators and Performance Log Users read frame times",
         ),
-        Outside::SignIn => Some(
-            "Anti-cheat games are measured from your next sign-in: Windows adds you to Performance Log Users then",
-        ),
-        Outside::Missing => {
-            Some("Anti-cheat games aren't measured: PresentMon.exe is missing next to FormalPacer")
+        Outside::SignIn => {
+            Some("Anti-cheat games are measured from your next sign-in: Windows adds you to Performance Log Users then")
         }
-        Outside::Failed(_) => {
-            Some("Anti-cheat games aren't measured: PresentMon stopped and is restarting")
-        }
+        Outside::Missing => Some("Anti-cheat games aren't measured: PresentMon.exe is missing next to FormalPacer"),
+        Outside::Failed(_) => Some("Anti-cheat games aren't measured: PresentMon stopped and is restarting"),
         Outside::Starting | Outside::Running => None,
     }
 }
@@ -120,4 +116,4 @@ fn lower_first(s: &str) -> String {
     chars.next().map(|c| c.to_lowercase().chain(chars).collect()).unwrap_or_default()
 }
 
-pub const OVERLAY_HOTKEY: &str = "Frame rate, cap and VRR in the game's top-left corner. Right Shift + F10 toggles it in game, or run formalpacer --toggle-overlay from a key binding.";
+pub const OVERLAY_HOTKEY: &str = "Frame rate, cap and VRR in the game's top-left corner, in a window over it for anti-cheat games. Right Shift + F10 toggles it in other games, or run formalpacer --toggle-overlay from a key binding.";

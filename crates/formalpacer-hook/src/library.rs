@@ -10,7 +10,6 @@ const LIBRARIES: &[&str] = &[
     "\\gog galaxy\\games\\",
     "\\gog games\\",
     "\\xboxgames\\",
-    "\\windowsapps\\",
     "\\riot games\\",
     "\\ea games\\",
     "\\electronic arts\\",
@@ -98,6 +97,39 @@ const KNOWN: &[&str] = &[
 /// A game, judged from outside: installed where stores put games, and not one of their launchers.
 pub fn is_game(exe: &Path) -> bool {
     in_game_library(exe) && !not_a_game(exe)
+}
+
+/// Files a game engine or a store's SDK ships beside a game's executable.
+const ENGINE_FILES: &[&str] = &[
+    "unityplayer.dll",
+    "gameassembly.dll",
+    "steam_api64.dll",
+    "steam_api.dll",
+    "eossdk-win64-shipping.dll",
+    "galaxy64.dll",
+];
+
+/// Whether the executable ships as a game does: an Unreal shipping build, a Godot pack of the same
+/// name, or an engine's or a store SDK's library beside it. This is how a game installed outside
+/// the stores' libraries is told from a desktop, a browser, a terminal or a video player, which
+/// fill the screen too.
+pub fn has_engine_files(exe: &Path) -> bool {
+    let name = exe.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if name.ends_with("-shipping.exe") {
+        return true;
+    }
+    let pack = format!("{}.pck", name.trim_end_matches(".exe"));
+    let Some(dir) = exe.parent() else { return false };
+    std::fs::read_dir(dir).into_iter().flatten().flatten().any(|entry| {
+        let file = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        ENGINE_FILES.contains(&file.as_str()) || file == pack
+    })
+}
+
+/// Whether FormalPacer may pace the program at `exe` from inside: a game in a store's library, or
+/// one that ships as a game.
+pub fn may_hook(exe: &Path) -> bool {
+    !not_a_game(exe) && (in_game_library(exe) || has_engine_files(exe)) && anticheat(exe).is_none()
 }
 
 /// A launcher or tool known to present frames of its own.
@@ -189,5 +221,24 @@ mod tests {
         assert!(!is_game(Path::new(
             "C:/Program Files (x86)/Epic Games/Launcher/Portal/Binaries/Win64/EpicGamesLauncher.exe"
         )));
+        assert!(!is_game(Path::new(
+            "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe"
+        )));
+    }
+
+    #[test]
+    fn a_game_outside_the_libraries_is_known_by_its_engine_files() {
+        let root = std::env::temp_dir().join(format!("fpengine-{}", std::process::id()));
+        let unity = root.join("Games/Some Unity Game");
+        let plain = root.join("Tools/Viewer");
+        std::fs::create_dir_all(&unity).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(unity.join("UnityPlayer.dll"), b"").unwrap();
+        std::fs::write(plain.join("viewer.dll"), b"").unwrap();
+        assert!(may_hook(&unity.join("Game.exe")));
+        assert!(!may_hook(&plain.join("viewer.exe")));
+        assert!(may_hook(Path::new("D:/Games/Thing/Binaries/Win64/Thing-Win64-Shipping.exe")));
+        assert!(!may_hook(Path::new("C:/Windows/explorer.exe")));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -11,10 +11,12 @@ use formalpacer_hook::pacer::{self, Frame};
 use minhook::MinHook;
 use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_WARP;
-use windows::Win32::Graphics::Direct3D11::{D3D11_CREATE_DEVICE_FLAG, D3D11_SDK_VERSION, D3D11CreateDeviceAndSwapChain};
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_CREATE_DEVICE_FLAG, D3D11_SDK_VERSION, D3D11CreateDeviceAndSwapChain,
+};
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_MODE_DESC,
-    DXGI_SAMPLE_DESC,
+    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
+    DXGI_MODE_DESC, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_PRESENT_TEST, DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
@@ -68,7 +70,12 @@ fn probe() -> Option<IDXGISwapChain> {
         )
         .ok()?;
         let desc = DXGI_SWAP_CHAIN_DESC {
-            BufferDesc: DXGI_MODE_DESC { Width: 64, Height: 64, Format: DXGI_FORMAT_B8G8R8A8_UNORM, ..Default::default() },
+            BufferDesc: DXGI_MODE_DESC {
+                Width: 64,
+                Height: 64,
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                ..Default::default()
+            },
             SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
             BufferCount: 2,
@@ -142,7 +149,12 @@ pub fn rects(frame: &Frame) -> Vec<([f32; 4], Vec<RECT>)> {
     let bitmap = &frame.bitmap;
     let cell = bitmap.scale as i32;
     let left = (MARGIN * bitmap.scale) as i32;
-    let rect = |x: i32, y: i32, w: i32, h: i32| RECT { left: left + x, top: left + y, right: left + x + w, bottom: left + y + h };
+    let rect = |x: i32, y: i32, w: i32, h: i32| RECT {
+        left: left + x,
+        top: left + y,
+        right: left + x + w,
+        bottom: left + y + h,
+    };
     let runs = bitmap.runs();
     (0..COLORS.len() as u8)
         .map(|value| {
@@ -150,7 +162,10 @@ pub fn rects(frame: &Frame) -> Vec<([f32; 4], Vec<RECT>)> {
             let rects = if value == BACKGROUND {
                 vec![rect(0, 0, bitmap.width as i32, bitmap.height as i32)]
             } else {
-                runs.iter().filter(|r| r.3 == value).map(|&(x, y, w, _)| rect(x as i32, y as i32, w as i32, cell)).collect()
+                runs.iter()
+                    .filter(|r| r.3 == value)
+                    .map(|&(x, y, w, _)| rect(x as i32, y as i32, w as i32, cell))
+                    .collect()
             };
             (color, rects)
         })

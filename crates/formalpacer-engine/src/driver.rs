@@ -1,7 +1,10 @@
 //! The cap of a game FormalPacer only measures, held by the NVIDIA driver's frame rate limiter.
 //! The driver reads it when the game starts, so the planner's answer for this run is the cap of
-//! the next one. A change is written once the plan has stood for a while, so a loading screen or
-//! a menu does not end up as the cap.
+//! the next one. A cap is written once the plan has stood for a while, and within a run it only
+//! goes up: a game sits in menus, lobbies and replays that run far slower than play, and whatever
+//! was written last caps the whole next run. A cap over what the game can do costs nothing; one
+//! under it costs frames all run. A plan of no cap (the game is too slow for one to help just
+//! then) writes nothing.
 //!
 //! Whatever the game's profile held before FormalPacer first wrote to it is kept in the config and
 //! put back when pacing is switched off.
@@ -21,13 +24,15 @@ pub struct Cap {
     /// What the driver holds for the run now going: the profile's value when the game was found.
     running: Option<u32>,
     written: Option<u32>,
+    /// Whether this run has written a cap yet; the first may lower the last run's.
+    wrote: bool,
     wanted: Option<(Option<u32>, Instant)>,
 }
 
 impl Cap {
     pub fn new(exe: &str, protected: bool) -> Self {
         let running = if nvidia::available() { nvidia::cap(exe).ok().flatten().filter(|&v| v > 0) } else { None };
-        Self { exe: exe.to_owned(), protected, running, written: running, wanted: None }
+        Self { exe: exe.to_owned(), protected, running, written: running, wrote: false, wanted: None }
     }
 
     pub fn limiter(&self) -> Limiter {
@@ -36,6 +41,11 @@ impl Cap {
         } else {
             Limiter::None { protected: self.protected }
         }
+    }
+
+    /// What the driver holds for the run now going.
+    pub fn running(&self) -> Option<u32> {
+        self.running
     }
 
     /// The planner's cap for this game now.
@@ -48,10 +58,9 @@ impl Cap {
             Some((w, _)) if w == fps => {}
             _ => self.wanted = Some((fps, Instant::now())),
         }
-        let Some((fps, since)) = self.wanted else { return Ok(()) };
-        // A game too slow for any cap goes back to what it had.
-        let fps = fps.or_else(|| config.driver_caps.get(&self.exe).copied().filter(|&v| v > 0));
-        if fps == self.written || since.elapsed() < SETTLE {
+        let Some((Some(fps), since)) = self.wanted else { return Ok(()) };
+        let lower = self.written.is_some_and(|w| fps <= w);
+        if Some(fps) == self.written || since.elapsed() < SETTLE || (self.wrote && lower) {
             return Ok(());
         }
         if !config.driver_caps.contains_key(&self.exe) {
@@ -59,8 +68,9 @@ impl Cap {
             config.driver_caps.insert(self.exe.clone(), original);
             crate::config::save(config)?;
         }
-        nvidia::set_cap(&self.exe, fps)?;
-        self.written = fps;
+        nvidia::set_cap(&self.exe, Some(fps))?;
+        self.written = Some(fps);
+        self.wrote = true;
         Ok(())
     }
 
@@ -68,6 +78,7 @@ impl Cap {
     /// written whatever it is.
     pub fn restored(&mut self) {
         self.written = None;
+        self.wrote = false;
         self.wanted = None;
     }
 }
