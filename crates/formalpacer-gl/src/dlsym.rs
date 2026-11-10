@@ -1,8 +1,13 @@
 //! `dlsym` hands back our swap functions for games that look them up in a libGL or libEGL they
-//! opened themselves. Every other lookup is passed on by a tail jump, so the real `dlsym` sees
-//! the caller's return address: `RTLD_NEXT` resolves relative to the object that asked, and
-//! another preloaded library looking up the next `dlopen` or `glXSwapBuffers` does not get its
-//! own back.
+//! opened themselves. Every other lookup is passed on by a tail jump to the next `dlsym`, so the
+//! real one sees the caller's return address: `RTLD_NEXT` resolves relative to the object that
+//! asked, and another preloaded library looking up the next `dlopen` or `glXSwapBuffers` does not
+//! get its own back.
+//!
+//! The next `dlsym` is the one after us in the preload order, not glibc's. Steam's overlay
+//! exports its own and sets up its other hooks only when that one is first called; bypassed, its
+//! `close` stays a no-op, and every `$(...)` in Steam's launch scripts waits on a pipe that never
+//! closes.
 
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -10,6 +15,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use crate::{Dlsym, game, hook};
 
 static REAL: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static NEXT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 #[cfg(target_arch = "x86_64")]
 const OLD_VERSION: &CStr = c"GLIBC_2.2.5";
@@ -37,6 +43,24 @@ extern "C" fn no_dlsym(_: *mut c_void, _: *const c_char) -> *mut c_void {
     std::ptr::null_mut()
 }
 
+/// The `dlsym` after ours in symbol order: another interposer's, else glibc's.
+extern "C" fn next_ptr() -> *mut c_void {
+    let ptr = NEXT.load(Ordering::Relaxed);
+    if !ptr.is_null() {
+        return ptr;
+    }
+    // SAFETY: RTLD_NEXT and a NUL-terminated name, resolved after this library.
+    let next = unsafe { real_dlsym()(libc::RTLD_NEXT, c"dlsym".as_ptr()) };
+    let ptr = if next.is_null() || next == dlsym as *mut c_void { real_ptr() } else { next };
+    NEXT.store(ptr, Ordering::Relaxed);
+    ptr
+}
+
+fn next_dlsym() -> Dlsym {
+    // SAFETY: next_ptr returns a dlsym.
+    unsafe { std::mem::transmute::<*mut c_void, Dlsym>(next_ptr()) }
+}
+
 pub fn real_dlsym() -> Dlsym {
     // SAFETY: real_ptr returns dlsym itself or a function of the same type.
     unsafe { std::mem::transmute::<*mut c_void, Dlsym>(real_ptr()) }
@@ -55,8 +79,9 @@ extern "C" fn route(handle: *mut c_void, name: *const c_char) -> *mut c_void {
     if game().is_none() {
         return std::ptr::null_mut();
     }
+    // Through the next dlsym, so an overlay behind us keeps its own swap hook and we call into it.
     // SAFETY: the caller's own handle and name.
-    let found = unsafe { real_dlsym()(handle, name.as_ptr()) };
+    let found = unsafe { next_dlsym()(handle, name.as_ptr()) };
     if found.is_null() {
         return std::ptr::null_mut();
     }
@@ -77,7 +102,7 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut
         "call {route}",
         "test rax, rax",
         "jnz 2f",
-        "call {real}",
+        "call {next}",
         "add rsp, 8",
         "pop rsi",
         "pop rdi",
@@ -88,7 +113,7 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut
         "pop rdi",
         "ret",
         route = sym route,
-        real = sym real_ptr,
+        next = sym next_ptr,
     )
 }
 
@@ -109,12 +134,12 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut
         "test eax, eax",
         "jnz 2f",
         "sub esp, 12",
-        "call {real}",
+        "call {next}",
         "add esp, 12",
         "jmp eax",
         "2:",
         "ret",
         route = sym route,
-        real = sym real_ptr,
+        next = sym next_ptr,
     )
 }
