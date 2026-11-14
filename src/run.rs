@@ -17,7 +17,8 @@ pub fn exec(_command: &[String]) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Unsupported, "not needed on Windows: start the game as usual")
 }
 
-/// The hooks shipped with this binary: installed in `../lib/formalpacer`, or a build tree.
+/// The hooks shipped with this binary: installed in `../lib/formalpacer`, beside it in an AppImage,
+/// or a build tree.
 #[cfg(unix)]
 fn hooks() -> Vec<PathBuf> {
     let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)) else {
@@ -28,6 +29,7 @@ fn hooks() -> Vec<PathBuf> {
         installed.join(LIBRARY),
         installed.join("i686").join(LIBRARY),
         dir.join(LIBRARY),
+        dir.join("i686").join(LIBRARY),
         dir.join("../i686-unknown-linux-gnu").join(dir.file_name().unwrap_or_default()).join(LIBRARY),
     ]
     .into_iter()

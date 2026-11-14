@@ -4,21 +4,12 @@
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot)
 
-# Intel's PresentMon (MIT), pinned to a release and its hash.
-$presentmonVersion = "2.6.0"
-$presentmonSha256 = "B2A706BC6AD475749E3B7E3409263AA1E6906D45BDCF993F6DBC0F660188F1AF"
-
 $env:RUSTUP_TOOLCHAIN = "1.95.0-x86_64-pc-windows-msvc"
 cargo build --release -p formalpacer -p formalpacer-layer -p formalpacer-inject
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
+& "$PSScriptRoot\fetch-presentmon.ps1"
 $presentmon = "target\windows\PresentMon.exe"
-if (-not (Test-Path $presentmon) -or (Get-FileHash $presentmon).Hash -ne $presentmonSha256) {
-    New-Item -ItemType Directory -Force (Split-Path $presentmon) | Out-Null
-    $url = "https://github.com/GameTechDev/PresentMon/releases/download/v$presentmonVersion/PresentMon-$presentmonVersion-x64.exe"
-    Invoke-WebRequest -UseBasicParsing $url -OutFile $presentmon
-    if ((Get-FileHash $presentmon).Hash -ne $presentmonSha256) { throw "PresentMon download does not match its hash" }
-}
 
 $dir = Join-Path $env:LOCALAPPDATA "Programs\FormalPacer"
 New-Item -ItemType Directory -Force $dir | Out-Null

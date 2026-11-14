@@ -1,0 +1,138 @@
+name: release
+
+# A `v*` tag whose version matches Cargo.toml publishes the AppImage and Setup.exe on its own
+# GitHub release and appends it to the signed update feed in the rolling `updates` release that
+# installed copies poll. A manual run builds and signs both without publishing anything.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # nd-cli with `[linux] files`. Its feed format matches the nd the app pins in Cargo.lock.
+  ND_REV: 6e0ea9a5b93e4a1d038f61f5c9e92b64f31368fd
+  ND_UPDATE_SIGNING_KEY: ${{ secrets.ND_UPDATE_SIGNING_KEY }}
+  GH_TOKEN: ${{ github.token }}
+  PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: version
+        name: version matches the tag
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$PUBLISH" = true ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+      - name: release notes
+        run: |
+          previous=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
+          if [ -n "$previous" ]; then
+            git log --no-merges --format='- %s' "$previous..HEAD" > notes.md
+          else
+            echo "- First release." > notes.md
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notes
+          path: notes.md
+      # Created here so the two packing jobs never race to create the same release.
+      - name: create the releases
+        if: env.PUBLISH == 'true'
+        run: |
+          gh release view updates >/dev/null 2>&1 \
+            || gh release create updates --title "Update feed" --notes "Static update feed written by nd release."
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "FormalPacer ${GITHUB_REF_NAME#v}" --notes-file notes.md
+
+  linux:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: notes
+      - name: system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-multilib pkg-config libasound2-dev \
+            libdrm-dev libfontconfig-dev libfreetype-dev libgbm-dev libssl-dev libvulkan-dev \
+            libwayland-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: rustup target add i686-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: nd
+        run: cargo install --locked --git https://github.com/FormalStudio/NativeDesktop --rev "$ND_REV" nd-cli
+      - name: build the app, the layer and the OpenGL hook
+        run: |
+          cargo build --release -p formalpacer -p formalpacer-layer -p formalpacer-gl
+          cargo build --release -p formalpacer-layer -p formalpacer-gl --target i686-unknown-linux-gnu
+          mkdir -p target/linux/i686
+          cp target/i686-unknown-linux-gnu/release/libformalpacer_layer.so target/i686-unknown-linux-gnu/release/libformalpacer_gl.so target/linux/i686/
+      - name: pack and sign
+        run: nd release --channel stable --notes notes.md $([ "$PUBLISH" = true ] || echo --no-publish)
+      - name: attach the AppImage
+        run: |
+          cp target/nd/releases/dev.formalsnake.formalpacer-stable.AppImage "FormalPacer-${{ needs.prepare.outputs.version }}-x86_64.AppImage"
+          if [ "$PUBLISH" = true ]; then
+            gh release upload "$GITHUB_REF_NAME" FormalPacer-*.AppImage --clobber
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: FormalPacer-*.AppImage
+
+  windows:
+    needs: prepare
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: notes
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: Swatinem/rust-cache@v2
+      - name: nd
+        run: cargo install --locked --git https://github.com/FormalStudio/NativeDesktop --rev "$ND_REV" nd-cli
+      - name: build the app, the layer and the Direct3D and OpenGL hook
+        run: cargo build --release -p formalpacer -p formalpacer-layer -p formalpacer-inject
+      - name: PresentMon
+        shell: pwsh
+        run: scripts/fetch-presentmon.ps1
+      - name: pack and sign
+        run: nd release --channel stable --notes notes.md $([ "$PUBLISH" = true ] || echo --no-publish)
+      - name: attach Setup.exe
+        run: |
+          cp target/nd/releases/dev.formalsnake.formalpacer-stable-Setup.exe "FormalPacer-${{ needs.prepare.outputs.version }}-Setup.exe"
+          if [ "$PUBLISH" = true ]; then
+            gh release upload "$GITHUB_REF_NAME" FormalPacer-*-Setup.exe --clobber
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: FormalPacer-*-Setup.exe

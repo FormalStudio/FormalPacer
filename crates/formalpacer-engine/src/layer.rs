@@ -15,6 +15,10 @@ const MANIFEST: &str = "formalpacer.json";
 /// skips a manifest whose `library_arch` does not match the game.
 #[cfg(not(windows))]
 const MANIFEST_32: &str = "formalpacer-32.json";
+/// Everything a game loads from us: the layer and the `LD_PRELOAD` OpenGL hook, each also in `i686`.
+#[cfg(not(windows))]
+const LIBRARIES: [&str; 4] =
+    [LIBRARY, "libformalpacer_gl.so", "i686/libformalpacer_layer.so", "i686/libformalpacer_gl.so"];
 
 #[cfg(not(windows))]
 fn data_home() -> Option<PathBuf> {
@@ -110,11 +114,64 @@ pub fn manifest_json(library: &Path, bits: u32) -> String {
         .replace("@LIBRARY_ARCH@", &bits.to_string())
 }
 
-/// Writes the user-level manifests pointing at the bundled libraries.
+/// Where an AppImage's libraries are copied: it runs from a mount that moves on every start and
+/// is gone once the app quits, so a manifest pointing into it breaks. `None` outside an AppImage.
+#[cfg(not(windows))]
+fn appimage_libraries() -> Option<PathBuf> {
+    std::env::var_os("APPIMAGE")?;
+    data_home().map(|d| d.join("formalpacer/lib"))
+}
+
+/// Copies the libraries beside `library` into `to`, keeping the `i686` directory, and returns the
+/// copy of `library`. A game may have the old copy mapped, so each file is written beside it and
+/// renamed over it: the game keeps the old inode, and the next start loads the new one.
+#[cfg(not(windows))]
+fn copy_libraries(library: &Path, to: &Path) -> io::Result<PathBuf> {
+    let from = library.parent().unwrap_or(Path::new(""));
+    for name in LIBRARIES {
+        let source = from.join(name);
+        let Ok(bytes) = std::fs::read(&source) else { continue };
+        let target = to.join(name);
+        if std::fs::read(&target).is_ok_and(|current| current == bytes) {
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let partial = target.with_extension("so.partial");
+        std::fs::write(&partial, &bytes)?;
+        std::fs::rename(&partial, &target)?;
+    }
+    Ok(to.join(LIBRARY))
+}
+
+/// In an AppImage, brings the copied libraries up to this version's after an update. Does
+/// nothing until the layer has been registered from one.
+#[cfg(not(windows))]
+pub fn refresh() -> io::Result<()> {
+    let (Some(to), Some(library)) = (appimage_libraries(), bundled_library()) else { return Ok(()) };
+    if to.join(LIBRARY).is_file() {
+        copy_libraries(&library, &to)?;
+    }
+    Ok(())
+}
+
+/// Velopack installs to a fixed directory and swaps its contents on update, so the manifest keeps
+/// pointing at the right file.
+#[cfg(windows)]
+pub fn refresh() -> io::Result<()> {
+    Ok(())
+}
+
+/// Writes the user-level manifests pointing at the bundled libraries, or in an AppImage at their
+/// copies in the user's data directory.
 #[cfg(not(windows))]
 pub fn install() -> io::Result<PathBuf> {
-    let library = bundled_library()
+    let mut library = bundled_library()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{LIBRARY} is not next to this binary")))?;
+    if let Some(to) = appimage_libraries() {
+        library = copy_libraries(&library, &to)?;
+    }
     let manifest = user_manifest(MANIFEST).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no HOME"))?;
     if let Some(parent) = manifest.parent() {
         std::fs::create_dir_all(parent)?;
@@ -146,4 +203,32 @@ pub fn install() -> io::Result<PathBuf> {
     std::fs::write(&manifest, manifest_json(&library, 64))?;
     crate::registry::register_implicit_layer(&manifest)?;
     Ok(manifest)
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copies_both_arches_and_replaces_a_changed_library() {
+        let root = std::env::temp_dir().join(format!("formalpacer-layer-{}", std::process::id()));
+        let (from, to) = (root.join("bin"), root.join("lib"));
+        std::fs::create_dir_all(from.join("i686")).unwrap();
+        std::fs::write(from.join(LIBRARY), b"layer 1").unwrap();
+        std::fs::write(from.join("libformalpacer_gl.so"), b"gl").unwrap();
+        std::fs::write(from.join("i686").join(LIBRARY), b"layer 32").unwrap();
+
+        let copied = copy_libraries(&from.join(LIBRARY), &to).unwrap();
+        assert_eq!(copied, to.join(LIBRARY));
+        assert_eq!(std::fs::read(to.join(LIBRARY)).unwrap(), b"layer 1");
+        assert_eq!(std::fs::read(to.join("libformalpacer_gl.so")).unwrap(), b"gl");
+        assert_eq!(std::fs::read(to.join("i686").join(LIBRARY)).unwrap(), b"layer 32");
+        assert!(!to.join("i686/libformalpacer_gl.so").exists());
+
+        std::fs::write(from.join(LIBRARY), b"layer 2").unwrap();
+        copy_libraries(&from.join(LIBRARY), &to).unwrap();
+        assert_eq!(std::fs::read(to.join(LIBRARY)).unwrap(), b"layer 2");
+        assert!(!to.join("libformalpacer_layer.so.partial").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

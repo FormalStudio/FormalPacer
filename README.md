@@ -47,7 +47,14 @@ every game.
 
 ## Install
 
-### Linux
+[Releases](https://github.com/FormalStudio/FormalPacer/releases) carry an AppImage for Linux and a
+`Setup.exe` for Windows. Both update themselves: the app checks the signed feed ten seconds after
+it starts and every six hours, downloads the update, and applies it when it quits. Register the
+layer from the window once. In the AppImage it copies the layer and the OpenGL hooks to
+`~/.local/share/formalpacer/lib`, because the AppImage's own files are gone once it quits, and
+refreshes them after each update. Copies built from source below do not update themselves.
+
+### Linux from source
 
 Needs Rust 1.95 (pinned by `rust-toolchain.toml`), the `i686-unknown-linux-gnu` target for 32-bit
 games (`rustup target add i686-unknown-linux-gnu`), 32-bit glibc headers (`glibc-devel-32bit` and
@@ -65,7 +72,7 @@ Start FormalPacer once; after that it starts in the tray at login. Games that we
 running need a restart. If the layer is not registered, the window offers to register it.
 `just uninstall` removes everything `install` put down.
 
-### Windows
+### Windows from source
 
 Needs Rust 1.95 and the Visual Studio build tools.
 
@@ -168,6 +175,19 @@ cargo test --workspace            # the planner, placement, EDID and the shared 
 just pacing-check 200 100 60      # fakegame at each rate under the headless engine
 FAKEGAME_FLAGS=--fullscreen just pacing-check
 ```
+
+### Releasing
+
+Bump `version` in `Cargo.toml`, commit, then tag and push it:
+
+```sh
+git tag v0.2.0 && git push origin main v0.2.0
+```
+
+`.github/workflows/release.yml` builds both installers, attaches them to the tag's release, and
+adds them to the update feed in the `updates` release, signed with the `ND_UPDATE_SIGNING_KEY`
+secret. Its public half is `[updates] public_key` in `nativedesktop.toml`; a new key strands every
+installed copy. Running the workflow by hand builds and signs both without publishing.
 
 ## License
 

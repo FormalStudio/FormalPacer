@@ -4,7 +4,7 @@ display_name = "FormalPacer"
 icon = "packaging/linux/dev.formalsnake.formalpacer.png"
 
 # Beside formalpacer.exe: the Vulkan layer, the Direct3D and OpenGL hook, and Intel's PresentMon
-# (MIT), which scripts/install-windows.ps1 downloads into target/windows.
+# (MIT), which scripts/fetch-presentmon.ps1 downloads into target/windows.
 [windows]
 files = [
     "target/release/formalpacer_layer.dll",
@@ -12,8 +12,18 @@ files = [
     "target/windows/PresentMon.exe",
 ]
 
-# Updates: `nd release keygen` prints public_key; the feed is any static host serving the
-# directory `nd release` writes (`nd release serve` for local tests).
-# [updates]
-# feed = "https://updates.example.com/formalpacer"
-# public_key = "..."
+# The 64-bit layer and OpenGL hook beside the binary in the AppImage, the 32-bit ones in i686.
+# The release workflow stages target/linux/i686 from the i686 build.
+[linux]
+files = [
+    "target/release/libformalpacer_layer.so",
+    "target/release/libformalpacer_gl.so",
+    "target/linux/i686",
+]
+
+# Every release lands in one rolling GitHub release tagged `updates`, signed with the key in
+# the ND_UPDATE_SIGNING_KEY secret (`nd release keygen` made it).
+[updates]
+feed = "https://github.com/FormalStudio/FormalPacer/releases/download/updates"
+public_key = "fuuQrCGN3RAjHI1dV9+e7XWogX4Z2SI6PofBXbZ0yC4="
+publish = { kind = "github", repo = "FormalStudio/FormalPacer" }

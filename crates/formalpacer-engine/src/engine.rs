@@ -233,6 +233,7 @@ impl Engine {
     fn new() -> Self {
         #[allow(unused_mut)]
         let mut config = config::load();
+        let notice = layer::refresh().err().map(|e| format!("Could not update the layer after an update: {e}"));
         // Limits left behind by a FormalPacer that did not exit cleanly; a game still running gets
         // its cap again on the next tick.
         #[cfg(windows)]
@@ -260,7 +261,7 @@ impl Engine {
             rtss: Rtss::Missing,
             #[cfg(windows)]
             osd: rtss::Osd::new(),
-            notice: None,
+            notice,
             last: None,
         }
     }
