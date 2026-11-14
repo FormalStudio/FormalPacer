@@ -96,7 +96,7 @@ jobs:
         run: nd release --channel stable --notes notes.md $([ "$PUBLISH" = true ] || echo --no-publish)
       - name: attach the AppImage
         run: |
-          cp target/nd/releases/dev.formalsnake.formalpacer-stable.AppImage "FormalPacer-${{ needs.prepare.outputs.version }}-x86_64.AppImage"
+          cp target/nd/releases/dev.formalsnake.formalpacer-linux-stable.AppImage "FormalPacer-${{ needs.prepare.outputs.version }}-x86_64.AppImage"
           if [ "$PUBLISH" = true ]; then
             gh release upload "$GITHUB_REF_NAME" FormalPacer-*.AppImage --clobber
           fi
@@ -134,7 +134,7 @@ jobs:
         run: nd release --channel stable --notes notes.md $([ "$PUBLISH" = true ] || echo --no-publish)
       - name: attach Setup.exe
         run: |
-          cp target/nd/releases/dev.formalsnake.formalpacer-stable-Setup.exe "FormalPacer-${{ needs.prepare.outputs.version }}-Setup.exe"
+          cp target/nd/releases/dev.formalsnake.formalpacer-win-stable-Setup.exe "FormalPacer-${{ needs.prepare.outputs.version }}-Setup.exe"
           if [ "$PUBLISH" = true ]; then
             gh release upload "$GITHUB_REF_NAME" FormalPacer-*-Setup.exe --clobber
           fi
