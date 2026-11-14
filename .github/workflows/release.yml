@@ -82,7 +82,10 @@ jobs:
       - run: rustup target add i686-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
       - name: nd
-        run: cargo install --locked --git https://github.com/FormalStudio/NativeDesktop --rev "$ND_REV" nd-cli
+        # nd-cli needs a newer rustc than the app pins in rust-toolchain.toml.
+        run: |
+          rustup toolchain install stable --profile minimal
+          RUSTUP_TOOLCHAIN=stable cargo install --locked --git https://github.com/FormalStudio/NativeDesktop --rev "$ND_REV" nd-cli
       - name: build the app, the layer and the OpenGL hook
         run: |
           cargo build --release -p formalpacer -p formalpacer-layer -p formalpacer-gl
@@ -118,7 +121,10 @@ jobs:
           dotnet-version: 8.0.x
       - uses: Swatinem/rust-cache@v2
       - name: nd
-        run: cargo install --locked --git https://github.com/FormalStudio/NativeDesktop --rev "$ND_REV" nd-cli
+        # nd-cli needs a newer rustc than the app pins in rust-toolchain.toml.
+        run: |
+          rustup toolchain install stable --profile minimal
+          RUSTUP_TOOLCHAIN=stable cargo install --locked --git https://github.com/FormalStudio/NativeDesktop --rev "$ND_REV" nd-cli
       - name: build the app, the layer and the Direct3D and OpenGL hook
         run: cargo build --release -p formalpacer -p formalpacer-layer -p formalpacer-inject
       - name: PresentMon
