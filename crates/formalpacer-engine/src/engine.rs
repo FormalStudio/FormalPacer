@@ -805,7 +805,14 @@ fn vrr_state(display: Option<&Display>) -> VrrState {
 /// Stats to a tenth of a frame, so the app is not woken for noise.
 fn rounded(s: Stats) -> Stats {
     let r = |v: f64| (v * 10.).round() / 10.;
-    Stats { avg_fps: r(s.avg_fps), low_fps: r(s.low_fps), capacity_fps: r(s.capacity_fps), frames: 0, span_s: 0. }
+    Stats {
+        avg_fps: r(s.avg_fps),
+        median_fps: r(s.median_fps),
+        low_fps: r(s.low_fps),
+        capacity_fps: r(s.capacity_fps),
+        frames: 0,
+        span_s: 0.,
+    }
 }
 
 impl Cap {

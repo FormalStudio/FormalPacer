@@ -27,6 +27,11 @@
 //! [`Pacer::update`], never more than 30 seconds, and not at all when the failed raise still got
 //! the game past the old cap).
 //!
+//! Under a blind cap the rate that counts is the median frame's, not the average: a lag spike
+//! (a burst of slow frames, a network hitch) drags the average far under the cap for as long as
+//! it is in the window, and planned from would take a game that holds 144 down to 72 or 20. Only
+//! a game whose ordinary frames run slower than the cap is short of it.
+//!
 //! Under a blind cap a game that drops far under it (a loading screen, the lobby, a heavy scene)
 //! is capped under what it reaches there, and the cap it had is remembered: once the game holds
 //! the lower cap, it goes straight back to the old one rather than climbing, and a game still in
@@ -91,6 +96,9 @@ impl Cap {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Stats {
     pub avg_fps: f64,
+    /// The median frame interval as a rate: what most frames run at, which a lag spike of a few
+    /// slow frames barely moves while it drags the average down for as long as it is in the window.
+    pub median_fps: f64,
     /// The 99th percentile frame interval as a rate (the usual "1% low").
     pub low_fps: f64,
     /// What the game could run at with no cap, from the 95th percentile of its work.
@@ -121,6 +129,7 @@ pub fn stats(samples: &[Sample]) -> Stats {
     let span_s = span as f64 / 1e6;
     Stats {
         avg_fps: intervals.len() as f64 / span_s,
+        median_fps: 1e6 / f64::from(percentile(&mut intervals, 0.5)),
         low_fps: 1e6 / f64::from(percentile(&mut intervals, 0.99)),
         capacity_fps: 1e6 / f64::from(percentile(&mut works, 0.95)),
         frames: intervals.len(),
@@ -238,7 +247,7 @@ impl Pacer {
             // frames from after the last change it is the old cap's.
             Some(_) if blind && now_s - self.changed_at < SETTLE_S => return self.cap,
             Some(current) if blind => {
-                let short = stats.avg_fps < current.fps * LOWER_AT;
+                let short = stats.median_fps < current.fps * LOWER_AT;
                 let wanted = if !short {
                     match self.scene_from.filter(|from| *from > current.fps + 0.01) {
                         Some(from) => plan_budget(from, display),
@@ -250,7 +259,7 @@ impl Pacer {
                             .or(Some(current)),
                     }
                 } else {
-                    plan(stats.avg_fps, display)
+                    plan(stats.median_fps, display)
                 };
                 (short, wanted)
             }
@@ -281,7 +290,7 @@ impl Pacer {
                     // The way back up to the old cap: the scene has not ended yet.
                     self.scene_wait_s = (self.scene_wait_s * 2.).clamp(RAISE_AFTER_S, BACKOFF_MAX_S);
                     self.blocked_until = now_s + self.scene_wait_s;
-                } else if raised && (!blind || stats.avg_fps >= self.raised_from * BLIND_SCENE) {
+                } else if raised && (!blind || stats.median_fps >= self.raised_from * BLIND_SCENE) {
                     self.stepping = true;
                     // Under a blind cap a failed raise costs a few seconds without a cap, and
                     // what the game can do moves with the scene: the next try never waits
@@ -292,7 +301,7 @@ impl Pacer {
                         self.blocked_until = now_s + backoff;
                         self.backoff_s = if blind { BACKOFF_START_S } else { (backoff * 2.).min(BACKOFF_MAX_S) };
                     }
-                } else if blind && stats.avg_fps < current.fps * BLIND_SCENE {
+                } else if blind && stats.median_fps < current.fps * BLIND_SCENE {
                     // Right after a raise, the cap the game last held is the one before it.
                     let held = if raised { self.raised_from } else { current.fps };
                     self.scene_from = Some(self.scene_from.map_or(held, |from| from.max(held)));
@@ -412,7 +421,14 @@ mod tests {
 
     /// An uncapped game at `capacity`, with the spread of frame times an uncapped game has.
     fn steady(capacity: f64) -> Stats {
-        Stats { avg_fps: capacity, low_fps: capacity * 0.9, capacity_fps: capacity, frames: 200, span_s: 2. }
+        Stats {
+            avg_fps: capacity,
+            median_fps: capacity,
+            low_fps: capacity * 0.9,
+            capacity_fps: capacity,
+            frames: 200,
+            span_s: 2.,
+        }
     }
 
     #[test]
@@ -440,7 +456,7 @@ mod tests {
         assert_eq!(fps(pacer.update(&steady(100.), &p, 0., true)), 90.);
         // Under the cap the limiter's wait counts as work: the game looks exactly as fast as the
         // cap, frame times as uneven as they come, and that never takes the cap down.
-        let held = Stats { avg_fps: 89.6, low_fps: 70., capacity_fps: 89.6, frames: 200, span_s: 2. };
+        let held = Stats { avg_fps: 89.6, median_fps: 89.6, low_fps: 70., capacity_fps: 89.6, frames: 200, span_s: 2. };
         for t in [0.25, 0.5, 1., 3.1] {
             assert_eq!(fps(pacer.update(&held, &p, t, true)), 90., "at {t}");
         }
@@ -455,27 +471,42 @@ mod tests {
         seeing.update(&held, &p, 1., false);
         assert!(fps(seeing.update(&held, &p, 1.25, false)) < 90.);
         // A hitch takes it a few percent under the cap: that is not falling short.
-        let hitch = Stats { avg_fps: 101., low_fps: 40., capacity_fps: 101., frames: 200, span_s: 2. };
+        let hitch =
+            Stats { avg_fps: 101., median_fps: 109.6, low_fps: 40., capacity_fps: 101., frames: 200, span_s: 2. };
         for t in [11.3, 11.55, 11.8] {
             assert_eq!(fps(pacer.update(&hitch, &p, t, true)), 110., "at {t}");
         }
         // 110 it stays under, though past 90: down under what it reaches, and from there a step
         // at a time, with no wait since the raise got it further.
-        let short = Stats { avg_fps: 104., low_fps: 90., capacity_fps: 104., frames: 200, span_s: 2. };
+        let short =
+            Stats { avg_fps: 104., median_fps: 104., low_fps: 90., capacity_fps: 104., frames: 200, span_s: 2. };
         assert_eq!(fps(pacer.update(&short, &p, 12.3, true)), 110.);
-        assert_eq!(fps(pacer.update(&short, &p, 13.9, true)), 95.);
-        let held = Stats { avg_fps: 94.6, low_fps: 80., capacity_fps: 94.6, frames: 200, span_s: 2. };
-        assert_eq!(fps(pacer.update(&held, &p, 17., true)), 95.);
-        assert_eq!(fps(pacer.update(&held, &p, 22.1, true)), 100.);
+        assert_eq!(fps(pacer.update(&short, &p, 14.9, true)), 95.);
+        let held = Stats { avg_fps: 94.6, median_fps: 94.6, low_fps: 80., capacity_fps: 94.6, frames: 200, span_s: 2. };
+        assert_eq!(fps(pacer.update(&held, &p, 18., true)), 95.);
+        assert_eq!(fps(pacer.update(&held, &p, 23.1, true)), 100.);
         // 100 it does not reach at all: back to 95, and the next try waits 30 s, never longer.
-        let at_95 = Stats { avg_fps: 96., low_fps: 90., capacity_fps: 96., frames: 200, span_s: 2. };
-        pacer.update(&at_95, &p, 25.2, true);
-        assert_eq!(fps(pacer.update(&at_95, &p, 27.8, true)), 85.);
-        let at_85 = Stats { avg_fps: 84.6, low_fps: 80., capacity_fps: 84.6, frames: 200, span_s: 2. };
-        for t in [31., 50., 57.9, 62.8] {
+        let at_95 = Stats { avg_fps: 96., median_fps: 96., low_fps: 90., capacity_fps: 96., frames: 200, span_s: 2. };
+        pacer.update(&at_95, &p, 26.2, true);
+        assert_eq!(fps(pacer.update(&at_95, &p, 28.8, true)), 85.);
+        let at_85 =
+            Stats { avg_fps: 84.6, median_fps: 84.6, low_fps: 80., capacity_fps: 84.6, frames: 200, span_s: 2. };
+        for t in [32., 51., 58.9, 63.8] {
             assert_eq!(fps(pacer.update(&at_85, &p, t, true)), 85., "at {t}");
         }
-        assert_eq!(fps(pacer.update(&at_85, &p, 63., true)), 90.);
+        assert_eq!(fps(pacer.update(&at_85, &p, 64., true)), 90.);
+    }
+
+    #[test]
+    fn a_lag_spike_under_a_blind_cap_keeps_the_cap() {
+        let p = panel(144., Vrr::Unsupported);
+        let mut pacer = Pacer::default();
+        assert_eq!(fps(pacer.update(&steady(200.), &p, 0., true)), 144.);
+        // A second of 50 ms frames: the average falls to 82, the median frame stays at the cap.
+        let spike = Stats { avg_fps: 82., median_fps: 143.5, low_fps: 20., capacity_fps: 82., frames: 164, span_s: 2. };
+        for t in [3.1, 3.35, 4., 5., 6., 7.] {
+            assert_eq!(fps(pacer.update(&spike, &p, t, true)), 144., "at {t}");
+        }
     }
 
     #[test]
@@ -484,8 +515,14 @@ mod tests {
         p.vrr_range = Some((30., 144.));
         let mut pacer = Pacer::default();
         assert_eq!(fps(pacer.update(&steady(100.), &p, 0., true)), 90.);
-        let at =
-            |fps: f64| Stats { avg_fps: fps - 0.4, low_fps: fps * 0.8, capacity_fps: fps, frames: 200, span_s: 2. };
+        let at = |fps: f64| Stats {
+            avg_fps: fps - 0.4,
+            median_fps: fps - 0.4,
+            low_fps: fps * 0.8,
+            capacity_fps: fps,
+            frames: 200,
+            span_s: 2.,
+        };
         pacer.update(&at(90.), &p, 3.1, true);
         assert_eq!(fps(pacer.update(&at(90.), &p, 8.2, true)), 110.);
         // Right after the raise, a loading screen at 40.
@@ -502,8 +539,14 @@ mod tests {
     fn a_lobby_after_a_loading_screen_gets_its_cap_back_at_once() {
         let p = panel(144., Vrr::Off);
         let mut pacer = Pacer::default();
-        let at =
-            |fps: f64| Stats { avg_fps: fps - 0.4, low_fps: fps * 0.8, capacity_fps: fps, frames: 200, span_s: 2. };
+        let at = |fps: f64| Stats {
+            avg_fps: fps - 0.4,
+            median_fps: fps - 0.4,
+            low_fps: fps * 0.8,
+            capacity_fps: fps,
+            frames: 200,
+            span_s: 2.,
+        };
         // A lobby at 120 on a fixed 144 Hz panel: 144 is tried and fails, 72 holds, and the raises
         // now wait 30 s and go a step at a time.
         assert_eq!(fps(pacer.update(&steady(130.), &p, 0., true)), 72.);
@@ -562,7 +605,8 @@ mod tests {
         let p = panel(144., Vrr::Unsupported);
         let mut pacer = Pacer::default();
         // Blocked in present for vsync: work reads as 140 fps while the game holds 144.
-        let locked = Stats { avg_fps: 143.8, low_fps: 140., capacity_fps: 140., frames: 288, span_s: 2. };
+        let locked =
+            Stats { avg_fps: 143.8, median_fps: 143.8, low_fps: 140., capacity_fps: 140., frames: 288, span_s: 2. };
         assert_eq!(fps(pacer.update(&locked, &p, 0., false)), 144.);
         assert_eq!(fps(pacer.update(&locked, &p, 0.25, false)), 144.);
         assert_eq!(fps(pacer.update(&locked, &p, 0.5, false)), 144.);
@@ -573,19 +617,22 @@ mod tests {
         let mut p = panel(144., Vrr::Active);
         p.vrr_range = Some((30., 144.));
         // A menu held at 120 by the game's own limiter: every frame's wait is in its work.
-        let own = Stats { avg_fps: 119.9, low_fps: 117., capacity_fps: 118.5, frames: 240, span_s: 2. };
+        let own =
+            Stats { avg_fps: 119.9, median_fps: 119.9, low_fps: 117., capacity_fps: 118.5, frames: 240, span_s: 2. };
         assert_eq!(fps(plan(capacity(&own, 144.), &p)), 120.);
-        let own = Stats { avg_fps: 59.94, low_fps: 59., capacity_fps: 59.5, frames: 120, span_s: 2. };
+        let own =
+            Stats { avg_fps: 59.94, median_fps: 59.94, low_fps: 59., capacity_fps: 59.5, frames: 120, span_s: 2. };
         assert_eq!(fps(plan(capacity(&own, 144.), &p)), 60.);
         let mut pacer = Pacer::default();
         for t in [0., 0.25, 0.5, 10., 20.] {
             assert_eq!(fps(pacer.update(&own, &p, t, false)), 60., "at {t}");
         }
         // Uneven frames are not a limiter: the headroom stays.
-        let rough = Stats { avg_fps: 120., low_fps: 80., capacity_fps: 110., frames: 240, span_s: 2. };
+        let rough =
+            Stats { avg_fps: 120., median_fps: 120., low_fps: 80., capacity_fps: 110., frames: 240, span_s: 2. };
         assert_eq!(fps(plan(capacity(&rough, 144.), &p)), 100.);
         // Under FormalPacer's own cap the work shows the room to spare, which the plan uses as is.
-        let capped = Stats { avg_fps: 90., low_fps: 89., capacity_fps: 140., frames: 180, span_s: 2. };
+        let capped = Stats { avg_fps: 90., median_fps: 90., low_fps: 89., capacity_fps: 140., frames: 180, span_s: 2. };
         assert_eq!(capacity(&capped, 144.), 140.);
     }
 

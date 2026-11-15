@@ -44,7 +44,7 @@ pub fn snapshot() -> Snapshot {
         game: Some(Game {
             name: "ELDEN RING".into(),
             steam_app_id: 1245620,
-            stats: Stats { avg_fps: 48., low_fps: 46.9, capacity_fps: 61.4, frames: 0, span_s: 0. },
+            stats: Stats { avg_fps: 48., median_fps: 48., low_fps: 46.9, capacity_fps: 61.4, frames: 0, span_s: 0. },
             cap: Some(Cap { fps: 143.973 / 3., kind: CapKind::Fraction(3) }),
             display: "DP-1".into(),
             placement: Placement::Window,
